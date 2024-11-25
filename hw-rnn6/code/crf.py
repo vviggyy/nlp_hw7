@@ -150,7 +150,7 @@ class ConditionalRandomField(HiddenMarkovModel):
               lr: float = 1.0,
               reg: float = 0.0,
               max_steps: int = 50000,
-              save_path: Optional[Path] = Path("my_hmm.pkl")) -> None:
+              save_path: Optional[Path] = Path("my_hmm.pkl"), checkpoint = None) -> None:
         """Train the CRF on the given training corpus, starting at the current parameters.
 
         The minibatch_size controls how often we do an update.

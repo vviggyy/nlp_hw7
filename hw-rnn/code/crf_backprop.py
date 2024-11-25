@@ -50,6 +50,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Call both parent classes' initializers
         nn.Module.__init__(self)  
+        print("Initializing ConditionalRandomFieldBack")
         super().__init__(tagset, vocab, unigram)
 
         # Print number of parameters        
@@ -103,8 +104,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
        
         self.updateAB()
        
-        self.updateAB()  # update A and B potential matrices from new params
-
     def init_optimizer(self, lr: float, weight_decay: float) -> None:      
         """Creates an optimizer for training.
         A subclass may override this method to select a different optimizer."""
@@ -192,7 +191,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
             
             total_loss.backward()
             self.optimizer.step()
-            self.updateAB()
             self.minibatch_sentences = [] 
         
     @override

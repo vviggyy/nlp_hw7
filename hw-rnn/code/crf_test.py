@@ -42,21 +42,32 @@ class ConditionalRandomFieldTest(ConditionalRandomFieldBackprop):
         """Construct an CRF with initially random parameters, with the
         given tagset, vocabulary, and lexical features.  See the super()
         method for discussion."""
-
-        # an __init__() call to the nn.Module class must be made before assignment on the child.
-        nn.Module.__init__(self)  
+        if unigram:
+            raise NotImplementedError("Not required for this homework")
+            
 
         self.E = lexicon          # rows are word embeddings
         self.e = lexicon.size(1)  # dimensionality of word embeddings
-        self.rnn_dim = rnn_dim
-
+        self.rnn_dim = rnn_dim        
+        torch.autograd.set_detect_anomaly(True)
+        # an __init__() call to the nn.Module class must be made before assignment on the child.
+        nn.Module.__init__(self)  
         super().__init__(tagset, vocab, unigram)
 
     @override
     def init_params(self) -> None:
         # [docstring will be inherited from parent method]
+        self.WA = nn.Parameter(torch.randn(self.k, self.k) * 0.1)
+        self.WB = nn.Parameter(torch.randn(self.k, self.V) * 0.1)
+        
+        # Position-aware features
+        self.pos_dim = 4
+        self.pos_embeddings = nn.Parameter(torch.randn(50, self.pos_dim) * 0.1)
+        self.trans_proj = nn.Parameter(torch.randn(self.k * self.k, self.e + self.pos_dim) * 0.1)
+        self.emit_proj = nn.Parameter(torch.randn(self.k, self.e + self.pos_dim) * 0.1)
+        
+        self.updateAB()
 
-        raise NotImplementedError   # you fill this in!
 
     @override
     def updateAB(self) -> None:
@@ -68,25 +79,53 @@ class ConditionalRandomFieldTest(ConditionalRandomFieldBackprop):
         # and self.B (for example, multiplying stationary and non-stationary
         # potentials), then you'll still need to compute them; in that case,
         # don't override the parent in this way.
-        pass   # do nothing
+        A = torch.exp(self.WA).clone()
+        B = torch.exp(self.WB).clone()
+        
+        # Apply structural zeros to copies
+        A[:, self.bos_t] = 0
+        A[self.eos_t, :] = 0
+        B[self.eos_t:, :] = 0
+        
+        self.A = A
+        self.B = B
 
     @override
     @typechecked
     def A_at(self, position, sentence) -> Tensor:
-        # [docstring will be inherited from parent method]
-
-        # You need to override this function to compute your non-stationary features.
-
-        raise NotImplementedError   # you fill this in!
-
-        return non_stationary_A   # example
+        """Compute transition potentials at given position."""
         
+        curr_word = sentence[position][0]
+        curr_emb = self.E[curr_word]
         
+        pos = min(position, len(self.pos_embeddings)-1)
+        pos_emb = self.pos_embeddings[pos]
+        
+        combined = torch.cat([curr_emb, pos_emb])
+        trans_logits = F.linear(combined, self.trans_proj)
+        trans_logits = trans_logits.reshape(self.k, self.k)
+        
+        A = torch.exp(trans_logits)
+        A[:, self.bos_t] = 0
+        A[self.eos_t, :] = 0
+        
+        return A
+
     @override
     @typechecked
     def B_at(self, position, sentence) -> Tensor:
-        # [docstring will be inherited from parent method]
-
-        raise NotImplementedError   # you fill this in!
-
-        return non_stationary_B    # example
+        """Compute emission potentials at given position."""
+        
+        if position >= len(sentence):
+            return torch.zeros(self.k, self.V)
+            
+        word = sentence[position][0]
+        word_emb = self.E[word]
+        pos = min(position, len(self.pos_embeddings)-1)
+        pos_emb = self.pos_embeddings[pos]
+        
+        combined = torch.cat([word_emb, pos_emb])
+        emit_logits = F.linear(combined, self.emit_proj)
+        B = torch.exp(emit_logits).unsqueeze(1).expand(-1, self.V)
+        B[self.eos_t:, :] = 0
+        return B

@@ -83,6 +83,16 @@ class HiddenMarkovModel:
         self.eye: Tensor = torch.eye(self.k)  # identity matrix, used as a collection of one-hot tag vectors
 
         self.init_params()     # create and initialize model parameters
+
+    @typechecked
+    def A_at(self, position: int, sentence: IntegerizedSentence) -> Tensor:
+        """Return transition matrix for a specific position in a sentence."""
+        return self.A
+
+    @typechecked
+    def B_at(self, position: int, sentence: IntegerizedSentence) -> Tensor:
+        """Return emission matrix for a specific position in a sentence."""
+        return self.B
  
     def init_params(self) -> None:
         """Initialize params to small random values (which breaks ties in the fully unsupervised case).  
@@ -430,7 +440,7 @@ class HiddenMarkovModel:
         # But to better match the notation in the handout, we'll instead
         # preallocate a list alpha of length n+2 so that we can assign 
         # directly to each alpha[j] in turn.
-        
+        self.setup_sentence(isent)
         # extract word IDs excluding BOS and EOS
         word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)  # exclude BOS and EOS
         T = len(word_ids) + 1  
@@ -441,8 +451,8 @@ class HiddenMarkovModel:
         
         #valid_tags = [t for t in range(self.k) if t != self.bos_t and t != self.eos_t]
 
-        log_A = torch.log(self.A + 1e-10)
-        log_B = torch.log(self.B + 1e-10)
+        #log_A = torch.log(self.A + 1e-10)
+        #log_B = torch.log(self.B + 1e-10)
 
         #scaling as in other functions
         #scaling_factors  = []
@@ -453,11 +463,17 @@ class HiddenMarkovModel:
             prev_alpha = alphas[-1].clone()
         
             # Compute alpha[t] for all states
+            A = self.A_at(t, isent)
+            B = self.B_at(t, isent)
+            
+            log_A = torch.log(A + 1e-10)
+            log_B = torch.log(B + 1e-10)
+
             alpha_t = torch.logsumexp(prev_alpha.unsqueeze(1) + log_A, dim=0)
             alpha_t = torch.where(torch.tensor([i == self.bos_t for i in range(self.k)]),
                             torch.tensor(float('-inf')),
                             alpha_t)
-            alpha[t] = alpha_t + log_B[:, word_ids[t-1]]
+            #alpha[t] = alpha_t + log_B[:, word_ids[t-1]]
             next_alpha = alpha_t + log_B[:, word_ids[t-1]]
             alphas.append(next_alpha)
 
@@ -470,8 +486,11 @@ class HiddenMarkovModel:
         alpha = torch.stack(alphas)
         self.alpha = alpha
 
+        final_A = self.A_at(T, isent)
+        self.log_Z = torch.logsumexp(alpha[T-1] + torch.log(final_A + 1e-10)[:, self.eos_t], dim=0)
+
         #  log probability (log Z) is alpha at EOS position plus scaling
-        self.log_Z = torch.logsumexp(alpha[T-1] + log_A[:, self.eos_t], dim=0)
+        #self.log_Z = torch.logsumexp(alpha[T-1] + log_A[:, self.eos_t], dim=0)
 
         #self.scaling_factors = scaling_factors
 
@@ -485,16 +504,20 @@ class HiddenMarkovModel:
     def backward_pass(self, isent: IntegerizedSentence, mult: float = 1) -> TorchScalar:
         """
         We wanted this to work for supervised, semi-supervised, and unsupervised data."""
+        self.setup_sentence(isent)
+        
         word_ids = torch.tensor([w for w, _ in isent], dtype=torch.long)
         T = len(word_ids) - 2  # exclude BOS and EOS
- 
-
-        # pre comp these for faster alg 
-        log_A = torch.log(self.A + 1e-10)
-        log_B = torch.log(self.B + 1e-10)
 
         beta = torch.full((T + 2, self.k), float('-inf'))
         beta[-1, self.eos_t] = 0.0
+
+        # pre comp these for faster alg 
+        #log_A = torch.log(self.A + 1e-10)
+        #log_B = torch.log(self.B + 1e-10)
+
+        #beta = torch.full((T + 2, self.k), float('-inf'))
+        #beta[-1, self.eos_t] = 0.0
 
         # Create mask for valid tags
         valid_mask = torch.ones(self.k, dtype=torch.bool)
@@ -503,11 +526,22 @@ class HiddenMarkovModel:
         valid_indices = torch.where(valid_mask)[0]
         
         # Handle T position first (transitions to EOS)
-        beta[T, valid_indices] = log_A[valid_indices, self.eos_t]
+        # Get final transition matrix
+        final_A = self.A_at(T+1, isent) 
+        beta[T, valid_indices] = torch.log(final_A + 1e-10)[valid_indices, self.eos_t]
+    
+        #beta[T, valid_indices] = log_A[valid_indices, self.eos_t]
         
         # backward pass with scaling
         for j in range(T, -1, -1):
             next_word = word_ids[j+1]
+
+            # Get position-specific matrices
+            A = self.A_at(j+1, isent)
+            B = self.B_at(j+1, isent)
+            
+            log_A = torch.log(A + 1e-10)
+            log_B = torch.log(B + 1e-10)
 
             if j == T:
                 beta[j, valid_indices] = log_A[valid_indices, self.eos_t]
@@ -544,17 +578,20 @@ class HiddenMarkovModel:
         # conforms to the type annotations ...)
 
         isent = self._integerize_sentence(sentence, corpus)
+        self.setup_sentence(isent)
         n = len(isent) - 2  # exclude BOS and EOS
         
         word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)
-        log_A = torch.log(torch.where(self.A > 0, self.A, torch.tensor(1e-10)))
-        log_B = torch.log(torch.where(self.B > 0, self.B, torch.tensor(1e-10)))
+        #log_A = torch.log(torch.where(self.A > 0, self.A, torch.tensor(1e-10)))
+        #log_B = torch.log(torch.where(self.B > 0, self.B, torch.tensor(1e-10)))
         
         # exclusing BOS and EOS valid tag mask  
         valid_mask = torch.ones(self.k, dtype=torch.bool)
         valid_mask[self.bos_t] = False
         valid_mask[self.eos_t] = False
         valid_indices = torch.where(valid_mask)[0]
+
+
         
         alpha = torch.full((n + 2, self.k), float('-inf'))
         backpointers = torch.full((n + 2, self.k), -1, dtype=torch.long)
@@ -563,6 +600,12 @@ class HiddenMarkovModel:
         alpha[0, self.bos_t] = 0.0
 
         # for position 1, first word after BOS handle more efficiently 
+        A = self.A_at(1, isent)
+        B = self.B_at(1, isent)
+        log_A = torch.log(torch.where(A > 0, A, torch.tensor(1e-10)))
+        log_B = torch.log(torch.where(B > 0, B, torch.tensor(1e-10)))
+
+        # Handle first word after BOS
         word_id = word_ids[0]
         scores_1 = log_A[self.bos_t, valid_indices] + log_B[valid_indices, word_id]
         alpha[1, valid_indices] = scores_1
@@ -570,6 +613,13 @@ class HiddenMarkovModel:
 
         for j in range(2, n + 1):  # Positions 2 to n
             word_id = word_ids[j-1]
+
+            # Get position-specific matrices
+            A = self.A_at(j, isent)
+            B = self.B_at(j, isent)
+            log_A = torch.log(torch.where(A > 0, A, torch.tensor(1e-10)))
+            log_B = torch.log(torch.where(B > 0, B, torch.tensor(1e-10)))
+            
         
             # all possible transitions at once [prev_tags, curr_tags]
             scores = (alpha[j-1, valid_indices].unsqueeze(1) +  
@@ -583,7 +633,9 @@ class HiddenMarkovModel:
             backpointers[j, valid_indices] = valid_indices[best_prev]
 
         # transition to EOS at position n+1, more efficient
-        final_scores = alpha[n, valid_indices] + log_A[valid_indices, self.eos_t]
+        final_A = self.A_at(n+1, isent)
+        log_final_A = torch.log(torch.where(final_A > 0, final_A, torch.tensor(1e-10)))
+        final_scores = alpha[n, valid_indices] + log_final_A[valid_indices, self.eos_t]
         max_final_score, best_final = torch.max(final_scores, dim=0)
         alpha[n + 1, self.eos_t] = max_final_score
         backpointers[n + 1, self.eos_t] = valid_indices[best_final]
@@ -609,6 +661,11 @@ class HiddenMarkovModel:
                 result.append((word, self.tagset[tag_idx]))
 
         return Sentence(result)
+    
+    def setup_sentence(self, isent: IntegerizedSentence) -> None:
+        """Precompute any quantities needed for forward/backward/Viterbi algorithms.
+        This method may be overridden in subclasses."""
+        pass
 
     def save(self, path: Path|str, checkpoint=None, checkpoint_interval: int = 300) -> None:
         """Save this model to the file named by path.  Or if checkpoint is not None, insert its 

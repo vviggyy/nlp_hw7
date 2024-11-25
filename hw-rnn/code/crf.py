@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from math import inf, log, exp
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 from typing_extensions import override
 from typeguard import typechecked
 
@@ -123,6 +123,80 @@ class ConditionalRandomField(HiddenMarkovModel):
             
         self.updateAB()   # compute potential matrices
 
+    @override
+    def forward_pass(self, isent: Sentence) -> TorchScalar:
+        
+        self.setup_sentence(isent)
+
+        word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)
+        tag_ids = [t for _, t in isent[1:-1]]
+        T = len(word_ids) + 1
+
+        alpha = torch.full((T, self.k), float('-inf'))
+        alpha[0, self.bos_t] = 0.0
+
+        # Add numerical stability constant
+        EPS = 1e-10
+        
+        # Compute logs once with stability
+        log_A = torch.log(self.A + EPS)
+        log_B = torch.log(self.B + EPS)
+
+        # Keep track of scale factors
+        scale_factors = torch.zeros(T)
+
+        for t in range(1, T):
+            A_t = log_A.clone()
+            B_t = log_B[:, word_ids[t-1]].clone()
+
+            if tag_ids[t-1] is not None:
+                # Create numerically stable masks
+                trans_mask = torch.zeros_like(A_t)
+                trans_mask[:, tag_ids[t-1]] = 1.0
+                emit_mask = torch.zeros_like(B_t)
+                emit_mask[tag_ids[t-1]] = 1.0
+
+                # Use very negative number instead of -inf
+                A_t = torch.where(trans_mask.bool(), A_t, torch.tensor(-1e4))
+                B_t = torch.where(emit_mask.bool(), B_t, torch.tensor(-1e4))
+
+            # Compute next alpha with scaling
+            next_alpha = torch.logsumexp(alpha[t-1].unsqueeze(1) + A_t, dim=0)
+            next_alpha = next_alpha + B_t
+            
+            # Scale to prevent underflow/overflow
+            max_alpha = next_alpha.max().item()
+            next_alpha = next_alpha - max_alpha
+            scale_factors[t] = max_alpha
+            
+            # Zero out BOS (use very negative instead of -inf)
+            next_alpha[self.bos_t] = -1e4
+            alpha[t] = next_alpha
+
+        # Final transition 
+        if tag_ids[-1] is not None:
+            trans_mask = torch.zeros_like(log_A[:, self.eos_t])
+            trans_mask[tag_ids[-1]] = 1.0
+            final_trans = torch.where(trans_mask.bool(), log_A[:, self.eos_t], 
+                                    torch.tensor(-1e4))
+        else:
+            final_trans = log_A[:, self.eos_t]
+
+        # Final logsum with scaling
+        final_sum = torch.logsumexp(alpha[T-1] + final_trans, dim=0)
+        
+        # Add back scale factors
+        self.log_Z = final_sum + scale_factors.sum()
+        self.alpha = alpha
+
+        if torch.isnan(self.log_Z):
+            print("WARNING: NaN in forward_pass")
+            print(f"alpha:\n{alpha}")
+            print(f"scale_factors:\n{scale_factors}")
+            print(f"final_sum:\n{final_sum}")
+
+        return self.log_Z
+    
     def updateAB(self) -> None:
         """Set the transition and emission matrices self.A and self.B, 
         based on the current parameters self.WA and self.WB.
@@ -233,7 +307,22 @@ class ConditionalRandomField(HiddenMarkovModel):
         # For convenience when working in a Python notebook, 
         # we automatically save our training work by default.
         if save_path: self.save(save_path)
- 
+    def compute_potentials(self, isent: Sentence) -> Tuple[Tensor, Tensor]:
+        """Helper to show transition and emission potentials for debugging."""
+        word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)
+        tag_ids = torch.tensor([t if t is not None else -1 for _, t in isent[1:-1]], dtype=torch.long)
+        
+        T = len(word_ids)
+        trans_potentials = []
+        emit_potentials = []
+        
+        for t in range(T):
+            A = self.A_at(t, isent)
+            B = self.B_at(t, isent)
+            trans_potentials.append(A)
+            emit_potentials.append(B[:, word_ids[t]])
+        
+        return torch.stack(trans_potentials), torch.stack(emit_potentials)
     @override
     @typechecked
     def logprob(self, sentence: Sentence, corpus: TaggedCorpus) -> TorchScalar:
@@ -258,11 +347,12 @@ class ConditionalRandomField(HiddenMarkovModel):
         #desup_isent = self._integerize_sentence(sentence.desupervise(), corpus)
 
         #basically the same thing as given but doing the integerizing elsewhere
-        numerator = super().logprob(sentence, corpus)
+        isent = self._integerize_sentence(sentence, corpus)
+        numerator = self.forward_pass(isent)  # Follows gold path if supervised
         
-        # Get log Z(w) = log ∑_t p(t,w) from untagged sequence
-        denominator = super().logprob(sentence.desupervise(), corpus)
-    
+        # For denominator, remove all tag information
+        desup_isent = self._integerize_sentence(sentence.desupervise(), corpus)
+        denominator = self.forward_pass(desup_isent)  # Marginalizes over all paths
         
         return numerator - denominator
 
