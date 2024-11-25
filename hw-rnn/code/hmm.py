@@ -8,6 +8,7 @@ from collections import defaultdict
 import logging
 from math import inf, log, exp
 from pathlib import Path
+import os, time
 from typing import Callable, List, Optional, cast
 from typeguard import typechecked
 
@@ -445,25 +446,33 @@ class HiddenMarkovModel:
 
         #scaling as in other functions
         #scaling_factors  = []
+        alphas = [alpha[0]]
 
         # Forward pass
         for t in range(1, T):
+            prev_alpha = alphas[-1].clone()
         
             # Compute alpha[t] for all states
-            alpha_t = torch.logsumexp(alpha[t-1].unsqueeze(1) + log_A, dim=0)
-            alpha_t[self.bos_t] = float('-inf')
+            alpha_t = torch.logsumexp(prev_alpha.unsqueeze(1) + log_A, dim=0)
+            alpha_t = torch.where(torch.tensor([i == self.bos_t for i in range(self.k)]),
+                            torch.tensor(float('-inf')),
+                            alpha_t)
             alpha[t] = alpha_t + log_B[:, word_ids[t-1]]
+            next_alpha = alpha_t + log_B[:, word_ids[t-1]]
+            alphas.append(next_alpha)
 
             # scaling to prevent underflow
             #max_alpha = torch.max(alpha_t)
             #alpha[t] = alpha_t - max_alpha
             #scaling_factors.append(max_alpha)
 
+        #  alpha for backward pass
+        alpha = torch.stack(alphas)
+        self.alpha = alpha
+
         #  log probability (log Z) is alpha at EOS position plus scaling
         self.log_Z = torch.logsumexp(alpha[T-1] + log_A[:, self.eos_t], dim=0)
 
-        #  alpha for backward pass
-        self.alpha = alpha
         #self.scaling_factors = scaling_factors
 
             # Note: once you have this working on the ice cream data, you may
@@ -601,22 +610,61 @@ class HiddenMarkovModel:
 
         return Sentence(result)
 
-    def save(self, model_path: Path) -> None:
-        logger.info(f"Saving model to {model_path}")
-        torch.save(self, model_path, pickle_protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info(f"Saved model to {model_path}")
+    def save(self, path: Path|str, checkpoint=None, checkpoint_interval: int = 300) -> None:
+        """Save this model to the file named by path.  Or if checkpoint is not None, insert its 
+        string representation into the filename and save to a temporary checkpoint file (but only 
+        do this save if it's been at least checkpoint_interval seconds since the last save).  If 
+        the save is successful, then remove the previous checkpoint file, if any."""
+
+        if isinstance(path, str): path = Path(path)   # convert str argument to Path if needed
+
+        now = time.time()
+        old_save_time =           getattr(self, "_save_time", None)
+        old_checkpoint_path =     getattr(self, "_checkpoint_path", None)
+        old_total_training_time = getattr(self, "total_training_time", 0)
+
+        if checkpoint is None:
+            self._checkpoint_path = None   # this is a real save, not a checkpoint
+        else:    
+            if old_save_time is not None and now < old_save_time + checkpoint_interval: 
+                return   # we already saved too recently to save another temp version
+            path = path.with_name(f"{path.stem}-{checkpoint}{path.suffix}")  # use temp filename
+            self._checkpoint_path = path
+
+        
+        # Save the model with the fields set as above, so that we'll 
+        # continue from it correctly when we reload it.
+        try:
+            torch.save(self, path, pickle_protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info(f"Saved model to {path}")
+        except Exception as e:   
+            # something went wrong with the save; so restore our old fields,
+            # so that caller can potentially catch this exception and try again
+            self._save_time          = old_save_time
+            self._checkpoint_path    = old_checkpoint_path
+            self.total_training_time = old_total_training_time
+            raise e
+        
+        # Since save was successful, remember it and remove old temp version (if any)
+        self._save_time = now
+        if old_checkpoint_path: 
+            try: os.remove(old_checkpoint_path)
+            except FileNotFoundError: pass  # don't complain if the user already removed it manually
+
 
     @classmethod
-    def load(cls, model_path: Path, device: str = 'cpu') -> HiddenMarkovModel:
-        model = torch.load(model_path, map_location=device)\
+    def load(cls, path: Path|str, device: str = 'cpu') -> HiddenMarkovModel:
+        if isinstance(path, str): path = Path(path)   # convert str argument to Path if needed
             
         # torch.load is similar to pickle.load but handles tensors too
         # map_location allows loading tensors on different device than saved
-        if model.__class__ != cls:
-            raise ValueError(f"Type Error: expected object of type {cls.__name__} but got {model.__class__.__name__} " \
-                             f"from saved file {model_path}.")
+        model = torch.load(path, map_location=device)
 
-        logger.info(f"Loaded model from {model_path}")
+        if not isinstance(model, cls):
+            raise ValueError(f"Type Error: expected object of type {cls.__name__} but got {model.__class__.__name__} " \
+                             f"from saved file {path}.")
+
+        logger.info(f"Loaded model from {path}")
         return model
 
     @typechecked

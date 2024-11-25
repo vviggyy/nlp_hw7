@@ -3,27 +3,29 @@
 Command-line interface for training and evaluating HMM and CRF taggers.
 """
 import argparse
+from concurrent.futures import ProcessPoolExecutor
+from itertools import product
 import logging
 from pathlib import Path
-import os, os.path, datetime
 from typing import Callable, Tuple, Union
 
-import torch, torch.backends.mps
-from corpus import TaggedCorpus
-from lexicon import build_lexicon                  
-from eval import model_cross_entropy, viterbi_error_rate, write_tagging, log as eval_log
-from hmm import HiddenMarkovModel
+import numpy as np
+import torch
+from eval import model_cross_entropy, viterbi_error_rate, write_tagging
+from hmm import HiddenMarkovModel, EnhancedHMM
 from crf import ConditionalRandomField
-from crf_neural import ConditionalRandomFieldNeural
-
-log = logging.getLogger(Path(__file__).stem)  # For usage, see findsim.py in earlier assignment.
+from corpus import TaggedCorpus
+from corpus import (Sentence, BOS_TAG, EOS_TAG, BOS_WORD, EOS_WORD, 
+                   OOV_WORD, TaggedCorpus)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
 
-    #####
+    ###
+    # HW6 and HW7 - General shared training parameters
+    ###
+
     filegroup = parser.add_argument_group("Model and data files")
-    #####
 
     filegroup.add_argument("input", type=str, help="input sentences for evaluation (labeled dev set or test set)")
 
@@ -31,22 +33,16 @@ def parse_args() -> argparse.Namespace:
         "-m",
         "--model",
         type=str,
-        help="load from here if not --train, save to here if --train (this is a .pkl file)"
-    )
-
-    filegroup.add_argument(
-        "-c",
-        "--checkpoint",
-        type=str,
-        help="continue training from this pretrained model or checkpoint, rather than from a random initialization"
+        help="file where the model will be saved.  If it already exists, it will be loaded; otherwise a randomly initialized model will be created"
     )
 
     filegroup.add_argument(
         "-t",
         "--train",
         type=str,
-        nargs="+",
-        help="training data files to train the model further"
+        nargs="*",
+        default=[],
+        help="optional training data files to train the model further"
     )
 
     filegroup.add_argument(
@@ -54,21 +50,10 @@ def parse_args() -> argparse.Namespace:
         "--output_file",
         type=str,
         default=None,
-        help="where to save the prediction outputs (defaults to model.output if --model is specified)"
+        help="where to save the prediction outputs"
     )
 
-    filegroup.add_argument(
-        "-e",
-        "--eval_file",
-        type=str,
-        default=None,
-        help="where to log intermediate and final evaluation, which may also be logged to stderr (defaults to model.eval if --model is specified)"
-    )
-
-
-    #####
     traingroup = parser.add_argument_group("Training procedure")
-    #####
 
     traingroup.add_argument(
         "--loss",
@@ -92,9 +77,7 @@ def parse_args() -> argparse.Namespace:
         help="maximum number of training steps (measured in sentences, not epochs or minibatches)"
     )
 
-    #####
     modelgroup = parser.add_argument_group("Tagging model structure")
-    #####
 
     modelgroup.add_argument(
         "-u",
@@ -102,6 +85,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="model should be only a unigram HMM or CRF (baseline)"
+    )
+
+    #for extra cred
+    modelgroup.add_argument(
+        "--decoder",
+        type=str,
+        default="viterbi",
+        choices=['viterbi', 'posterior'],
+        help="decoding method to use (viterbi or posterior)"
     )
     
     modelgroup.add_argument(
@@ -118,15 +110,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="model should use word embeddings drawn from this lexicon" 
     )
-
-    modelgroup.add_argument(
-        "-L",
-        "--problex",
-        action="store_true",
-        default=False,
-        help="model should use word embeddings based on probabilities in training data (may be combined with --lexicon)" 
-    )
-
+    
     modelgroup.add_argument(
         "-a",
         "--awesome",
@@ -135,9 +119,7 @@ def parse_args() -> argparse.Namespace:
         help="model should use extra improvements"
     )
 
-    #####
-    # top-level options
-    #####
+    # for verbosity of logging
     parser.set_defaults(logging_level=logging.INFO)
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
@@ -155,22 +137,46 @@ def parse_args() -> argparse.Namespace:
         help="device to use for PyTorch (cpu or cuda, or mps if you are on a mac)"
     )
 
-    #####
-    hmmgroup = parser.add_argument_group("HMM options (ignored for CRF)")
-    #####
+    hmmgroup = parser.add_argument_group("HMM-specific options (ignored for CRF)")
 
     hmmgroup.add_argument(
-        "-λ",
         "--lambda",
-        dest="λ",    # can't write "args.lambda" in code since it's a Python keyword
+        dest="λ",
         type=float,
         default=0,
         help="lambda for add-lambda smoothing in the HMM M-step"
     )
 
-    #####
-    crfgroup = parser.add_argument_group("CRF or gradient-training options (ignored for HMM)")
-    #####
+    crfgroup = parser.add_argument_group("CRF-specific options (ignored for HMM)")
+
+    crfgroup.add_argument(
+        "--reg",
+        type=float,
+        default=0.0,
+        help="l2 regularization coefficient during training"
+    )
+
+    crfgroup.add_argument(
+        "--lr",
+        type=float,
+        default=0.05,
+        help="learning rate during CRF training"
+    )
+
+
+    crfgroup.add_argument(
+        "--batch_size",
+        type=int,
+        default=30,
+        help="mini-batch size: number of training sentences per gradient update"
+    )
+
+    crfgroup.add_argument(
+        "--eval_interval",
+        type=int,
+        default=2000,
+        help="how often to evaluate the model (after training on this many sentences)"
+    )
 
     crfgroup.add_argument(
         "-r",
@@ -180,109 +186,140 @@ def parse_args() -> argparse.Namespace:
         help="model should encode context using recurrent neural nets with this hidden-state dimensionality (>= 0)"
     )
 
-    crfgroup.add_argument(
-        "--reg",
-        type=float,
-        default=0.0,
-        help="l2 regularization coefficient during training (default 0)"
-    )
+    awesomegroup = parser.add_argument_group("Awesome mode options")
 
-    crfgroup.add_argument(
-        "--lr",
-        type=float,
-        default=0.05,
-        help="learning rate during CRF training (default 0.05)"
+    awesomegroup.add_argument(
+        "--awesome_decoder",
+        type=str,
+        default="hybrid",
+        choices=['viterbi', 'posterior', 'hybrid'],
+        help="decoding method to use"
     )
-
-    crfgroup.add_argument(
-        "--batch_size",
-        type=int,
-        default=30,
-        help="mini-batch size: number of training sentences per gradient update (default 30)"
+    awesomegroup.add_argument(
+        "--supervised_constraint",
+        action="store_true",
+        default=True,
+        help="use supervised tag constraints"
     )
-
-    crfgroup.add_argument(
-        "--eval_interval",
-        type=int,
-        default=2000,
-        help="how often to evaluate the model (after training on this many sentences) (default 2000)"
+    awesomegroup.add_argument(
+        "--smart_smoothing",
+        action="store_true",
+        default=True,
+        help="use differential smoothing based on tag characteristics"
+    )
+    awesomegroup.add_argument(
+        "--optimize_hyperparams",
+        action="store_true",
+        help="run hyperparameter optimization"
     )
 
     args = parser.parse_args()
 
     ### Any arg manipulation and checking goes here
 
-    args.load_path = None    # new attribute
-    if args.model:
-        if args.train:
-            # --model says where to save
-            if os.path.exists(args.model):
-                log.warning(f"Warning: {args.model} already exists; will be overwritten at end of training")
-                if not args.checkpoint:
-                    log.warning(f"Warning: won't load {args.model}: use --checkpoint for that")
-        else:
-            # --model says where to load from
-            args.load_path = args.model
-    elif args.train:
-        log.warning(f"Warning: model won't be saved at end of training (use --model for that)")
+    # Get paths where we'll load and save model (possibly none).
+    # These are added to the args namespace.
+    if args.model is None:
+        args.load_path = args.save_path = None
+    else:
+        args.load_path = args.save_path = Path(args.model)
+        if not args.load_path.exists(): args.load_path = None  # only save here
 
-    if args.checkpoint:
-        if args.train:
-            # --checkpoint says where to load from
-            args.load_path = args.checkpoint
-        else:
-            parser.error("--checkpoint can only be used with --train")
+    # Default path where we'll save the outupt
+    if args.output_file is None:
+        args.output_file = args.input+"_output"
 
-    if args.load_path and not os.path.exists(args.load_path):
-            parser.error(f"file {args.load_path} doesn't exist")
-      
-    # default paths for saving the tagging outputs and eval
-    if args.model:
-        resultname = os.path.splitext(args.model)[0]
-        resultname += "_" + os.path.splitext(os.path.basename(args.input))[0]
-        print(resultname)
-        if not args.output_file:
-            args.output_file = resultname + ".output"
-        if not args.eval_file:
-            args.eval_file = resultname + ".eval"
-    if not args.output_file:
-        log.warning(f"Warning: won't save tagging output (use --output_file for that)")
-    if not args.eval_file:
-        log.warning(f"Warning: won't save evaluation messages (use --eval_file for that)")      
-
-    # What kind of model should we create?  Store it in args.new_model_class.
-    if args.load_path:      # don't need to create a new model
-        args.new_model_class = None 
-    elif not args.crf:      # create an HMM
-        if args.rnn_dim or args.lexicon or args.problex:
-            raise NotImplementedError("No neural HMM implemented (and it's not required)")
+    # What kind of model should we build?        
+    if not args.crf:
+        if args.awesome:
+            args.model_class = EnhancedHMM
         else:
-            args.new_model_class = HiddenMarkovModel
-    else:                   # create some sort of CRF
-        if args.rnn_dim or args.lexicon or args.problex:
-            args.new_model_class = ConditionalRandomFieldNeural
-        else: 
-            args.new_model_class = ConditionalRandomField          
+            args.model_class = HiddenMarkovModel
+            if args.lexicon or args.rnn_dim:
+                raise NotImplementedError("Neural HMM not implemented")
+    else:
+        args.model_class = ConditionalRandomField
+        if args.lexicon or args.rnn_dim:
+            raise NotImplementedError("Neural CRF not implemented")
+    
+
 
     return args
 
+
+def write_tagging(model: Union[HiddenMarkovModel, ConditionalRandomField], 
+                 corpus: TaggedCorpus, 
+                 output_file: Path,
+                 decoder: str = "viterbi") -> None:
+    """writes model predictions to file using specified decoding method"""
+    #logging.info(f"Writing predictions to {output_file} using {decoder} decoder")
+    
+    try:
+        with open(output_file, 'w') as f:
+            for sentence in corpus:
+                # Get predictions
+                if isinstance(model, EnhancedHMM):
+                    predicted = model.decode(sentence, corpus, method=decoder)
+                else:
+                    if decoder == "viterbi":
+                        predicted = model.viterbi_tagging(sentence, corpus)
+                    else:
+                        predicted = model.posterior_tagging(sentence, corpus)
+                
+                # skipping BOS/EOS
+                output_pairs = []
+                for word, tag in predicted:
+                    # Skip BOS/EOS tokens
+                    if word in [BOS_WORD, EOS_WORD]:
+                        continue
+                        
+                    #format OOV consistently
+                    if word == OOV_WORD:
+                        word = "OOV"  
+                        
+                    output_pairs.append(f"{word}/{tag}")
+                
+                print(" ".join(output_pairs), file=f)
+                
+    except Exception as e:
+        logging.error(f"Error in write_tagging: {str(e)}")
+        raise
+
+'''
+
+def optimize_hyperparams(model_class, train_corpus: TaggedCorpus, 
+                        dev_corpus: TaggedCorpus) -> dict:
+    """Find optimal hyperparameters using parallel grid search."""
+    param_grid = {
+        'λ': [0.01, 0.1, 0.5, 1.0, 2.0],
+        'decoder': ['viterbi', 'posterior', 'hybrid'],
+        'supervised_constraint': [True, False],
+        'smart_smoothing': [True, False]
+    }
+    
+    def evaluate_params(params):
+        model = model_class(train_corpus.tagset, train_corpus.vocab,
+                          supervised_constraint=params['supervised_constraint'],
+                          smart_smoothing=params['smart_smoothing'])
+        model.train(train_corpus, λ=params['λ'])
+        return model_cross_entropy(model, dev_corpus)
+    
+    # Parallel grid search using ProcessPoolExecutor
+    param_combinations = [dict(zip(param_grid.keys(), v)) 
+                         for v in product(*param_grid.values())]
+    
+    with ProcessPoolExecutor() as executor:
+        results = list(executor.map(evaluate_params, param_combinations))
+    
+    best_idx = np.argmin(results)
+    return param_combinations[best_idx]
+
+    '''
+
 def main() -> None:
     args = parse_args()
-    
-    # Which messages to log (and how to log them).  
-    # The logging module works a bit counterintuitively here, but
-    # here's how to set it up: don't let loggers filter by level,
-    # but instead have their handlers do so.
-    logging.basicConfig(level=logging.DEBUG)  # log everything, and install default handler (print to stderr)
-    for h in logging.getLogger().handlers:
-        h.setLevel(args.logging_level)  # make default handler quieter
-    if args.eval_file:
-        # handler for eval logger. It appends to eval_file, since
-        # we might be resuming training from a checkpoint, or evaluating
-        # a model on multiple files.
-        h = logging.FileHandler(args.eval_file, mode='a')
-        h.setLevel(logging.INFO)  # make this handler noisy enough
-        eval_log.addHandler(h)
+    logging.root.setLevel(args.logging_level)
+    logging.basicConfig(level=args.logging_level)
 
     # Specify hardware device where all tensors should be computed and
     # stored.  This will give errors unless you have such a device.
@@ -299,107 +336,61 @@ def main() -> None:
             exit(1)
     torch.set_default_device(args.device)
         
-    # Load or create the model, and load the training corpus.
-    train_paths = [Path(t) for t in args.train] if args.train else []
-    new_model_class = args.new_model_class
-    known_vocab = None   # we may need this
+    # load or create the model
     if args.load_path:
-        # load an existing model and use its vocab/tagset/lexicon
-        model = HiddenMarkovModel.load(args.load_path, device=args.device)  # HMM is ancestor of all classes
-        for option in 'crf', 'unigram', 'rnn_dim', 'lexicon', 'problex', 'awesome': 
-           if getattr(args, option):
-               log.warning(f"Ignoring --{option} in favor of loaded model")       
-        # integerize the training corpus using the vocab/tagset of the model
-        train_corpus = TaggedCorpus(*train_paths, tagset=model.tagset, vocab=model.vocab)
+        model = args.model_class.load(args.load_path, device=args.device)
+        train_corpus = TaggedCorpus(*[Path(t) for t in args.train], 
+                                  tagset=model.tagset, vocab=model.vocab)
     else:
-        # Build a new model of the required class from scratch, building vocab/tagset from training corpus.
-        assert new_model_class is not None
-        train_corpus = TaggedCorpus(*train_paths)
-        if not issubclass(new_model_class, ConditionalRandomFieldNeural):
-            # simple case
-            model = new_model_class(train_corpus.tagset, train_corpus.vocab, 
-                                    unigram=args.unigram)
-        else:
-            # For a neural model, we have to call the constructor with extra arguments.
-            # We start by making a lexicon of word embeddings.
-            if args.lexicon:
-                # The user gave us a file of pretrained lexical embeddings.
-                known_vocab = train_corpus.vocab   # save training vocab, since it may be replaced
-                lexicon = build_lexicon(train_corpus, 
-                                        embeddings_file=Path(args.lexicon) if args.lexicon else None, 
-                                        newvocab=TaggedCorpus(Path(args.input)).vocab,  # add only eval words from file
-                                        problex=args.problex)
-            else:
-                # No lexicon was specified, so default to simpler embeddings of the training words.
-                if args.problex:
-                    lexicon = build_lexicon(train_corpus, problex=args.problex)
-                else:
-                    # Simple one-hot embeddings are our final fallback if nothing else was specified.
-                    lexicon = build_lexicon(train_corpus, one_hot=True)
+        train_corpus = TaggedCorpus(*[Path(t) for t in args.train])
+        model = args.model_class(
+            train_corpus.tagset,
+            train_corpus.vocab,
+            unigram=args.unigram
+        )
 
-            # Now create the model.
-            model = new_model_class(train_corpus.tagset, train_corpus.vocab, 
-                                    rnn_dim=(args.rnn_dim or 0), lexicon=lexicon,   # neural model args
-                                    unigram=args.unigram)
-    
-    # Load the input data (eval corpus), using the same vocab and tagset.
+  
     eval_corpus = TaggedCorpus(Path(args.input), tagset=model.tagset, vocab=model.vocab)
     
-    # Construct the primary loss function on the eval corpus.
-    # This will be monitored throughout training and used for early stopping.
-    loss = lambda x: model_cross_entropy(x, eval_corpus)
-    other_loss = lambda x: viterbi_error_rate(x, eval_corpus, show_cross_entropy=False,
-                                              known_vocab=known_vocab or train_corpus.vocab)  # training words only
-    if args.loss == 'cross_entropy': 
-        pass
-    elif args.loss == 'viterbi_error':   # only makes sense if eval_corpus is supervised
-        loss, other_loss = other_loss, loss   # swap
+    #  loss function
+    if args.loss == 'cross_entropy':
+        loss = lambda x: model_cross_entropy(x, eval_corpus)
+    else:
+        loss = lambda x: viterbi_error_rate(x, eval_corpus, show_cross_entropy=False)
 
-    # Train on the training corpus, if given.    
     if train_corpus:
         if isinstance(model, ConditionalRandomField):
-            for option in 'λ':
-                if getattr(args, option):
-                    log.warning(f"Ignoring --{option} since we're training by SGD and don't have an M step ")      
-            model.train(corpus=train_corpus,
-                        loss=loss,
-                        minibatch_size=args.batch_size,
-                        eval_interval=args.eval_interval,
-                        lr=args.lr,
-                        reg=args.reg,
-                        tolerance=args.tolerance,
-                        max_steps=args.max_steps,
-                        save_path=args.model)
-        elif isinstance(model, HiddenMarkovModel): 
-            for option in 'reg', 'lr', 'batch_size', 'eval_interval':
-                if getattr(args, option):
-                    log.warning(f"Ignoring --{option} since we're training by batch EM, not SGD")      
-            model.train(corpus=train_corpus,
-                        loss=loss,
-                        λ=args.λ,    # type: ignore
-                        tolerance=args.tolerance,
-                        max_steps=args.max_steps,
-                        save_path=args.model)
+            model.train(
+                corpus=train_corpus,
+                loss=loss,
+                minibatch_size=args.batch_size,
+                eval_interval=args.eval_interval,
+                lr=args.lr,
+                reg=args.reg,
+                tolerance=args.tolerance,
+                max_steps=args.max_steps,
+                save_path=args.save_path
+            )
         else:
-            raise NotImplementedError()
-        
-        if hasattr(model, "total_training_time"):
-            eval_log.info(f"Total training time: {datetime.timedelta(seconds=int(model.total_training_time))}\n---")  # type: ignore
-    else:
-        # Any training-related options are irrelevant, but let's not complain if
-        # they were provided: we happen to be training on 0 files this time,
-        # that's all!
-        pass  
+            model.train(
+                corpus=train_corpus,
+                loss=loss,
+                λ=args.λ,
+                tolerance=args.tolerance,
+                max_steps=args.max_steps,
+                save_path=args.save_path
+            )
                      
-    # Run the model on the input data (eval corpus).
-    if args.output_file:
-        write_tagging(model, eval_corpus, Path(args.output_file))
-        eval_log.info(f"Wrote tagging to {args.output_file}")
-
-    # Show how well we did on the input data.  
-    loss(model)         # show the main loss function (using the logger) -- redundant if we trained
-    other_loss(model)   # show the other loss function (using the logger)
-    eval_log.info("===")
+    loss(model)
     
+    decoder = "viterbi"  # default to viterbi
+    if args.awesome:
+        decoder = args.awesome_decoder
+    elif hasattr(args, 'decoder'):
+        decoder = args.decoder
+        
+    write_tagging(model, eval_corpus, Path(args.output_file), decoder=decoder)
+    logging.info(f"Wrote {decoder} tagging to {args.output_file}")
+
 if __name__ == "__main__":
     main()

@@ -133,11 +133,11 @@ class ConditionalRandomField(HiddenMarkovModel):
         # so that the forward-backward code will still work.
         # See init_params() in the parent class for discussion of this point.
         if self.unigram:
-            self.A = torch.exp(self.WA).expand(self.k, -1)
+            self.A = torch.exp(self.WA).expand(self.k, -1).clone()
         else:
-            self.A = torch.exp(self.WA)
-
-        self.B = torch.exp(self.WB)
+            self.A = torch.exp(self.WA).clone()
+        
+        self.B = torch.exp(self.WB).clone()
         # need some way for WA, WB to be updated in the first place... 
         
     @override

@@ -91,7 +91,17 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # WA and WB will be ignored.  They don't affect the training objective
         # and you don't need to initialize them to -inf or anything else.)
 
-        raise NotImplementedError   # you fill this in!
+        with torch.no_grad():
+            if not self.unigram:
+                self.WA.data[:, self.bos_t] = -999  # can't transition to BOS
+                self.WA.data[self.eos_t, :] = -999  # can't transition from EOS
+                self.WA.data[self.bos_t, self.eos_t] = -999  # BOS can't transition directly to EOS
+
+            # BOS and EOS tags can't emit any words
+            self.WB.data[self.eos_t, :] = -999
+            self.WB.data[self.bos_t, :] = -999
+       
+        self.updateAB()
        
         self.updateAB()  # update A and B potential matrices from new params
 
@@ -138,7 +148,10 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # [docstring will be inherited from parent method]
 
         # Look up how to do this with a PyTorch optimizer!
-        raise NotImplementedError   # you fill this in!
+        if hasattr(self, 'optimizer'):
+            self.optimizer.zero_grad()
+        self.minibatch_sentences = []  # Store sentences for batch processing
+
 
     @override
     def accumulate_logprob_gradient(self, sentence: Sentence, corpus: TaggedCorpus) -> None:
@@ -156,7 +169,9 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Hint: You want to maximize the (regularized) log-probability. However,
         # PyTorch optimizers *minimize* functions by default.
         
-        raise NotImplementedError   # you fill this in!
+        if not hasattr(self, 'minibatch_sentences'):
+            self.minibatch_sentences = []
+        self.minibatch_sentences.append((sentence, corpus))
 
     @override
     def logprob_gradient_step(self, lr: float) -> None:
@@ -165,7 +180,20 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Look up how to do this with a PyTorch optimizer!
         # Basically, you want to take a step in the direction
         # of the accumulated gradient.
-        raise NotImplementedError   # you fill this in!
+        if hasattr(self, 'minibatch_sentences') and self.minibatch_sentences:
+        # Create a list of logprobs first
+            logprobs = []
+            for sentence, corpus in self.minibatch_sentences:
+                logprob = self.logprob(sentence, corpus)
+                logprobs.append(logprob)
+            
+            # Sum them using a non-in-place operation
+            total_loss = -sum(logprobs)  # Note the negative sign since we're minimizing
+            
+            total_loss.backward()
+            self.optimizer.step()
+            self.updateAB()
+            self.minibatch_sentences = [] 
         
     @override
     def reg_gradient_step(self, lr: float, reg: float, frac: float):
@@ -173,7 +201,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
 
         # Hint: We created an optimizer that already handles L2
         # regularization for us.        
-        raise NotImplementedError   # you fill this in!
+        pass
 
     def learning_speed(self, lr: float, minibatch_size: int) -> float:
         """Estimates how fast we are trying to learn, based on the gradient

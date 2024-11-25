@@ -103,7 +103,15 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="model should be only a unigram HMM or CRF (baseline)"
     )
-    
+    #for extra cred
+    modelgroup.add_argument(
+        "--decoder",
+        type=str,
+        default="viterbi",
+        choices=['viterbi', 'posterior'],
+        help="decoding method to use (viterbi or posterior)"
+    )
+
     modelgroup.add_argument(
         "--crf",
         action="store_true",
@@ -207,7 +215,40 @@ def parse_args() -> argparse.Namespace:
         default=2000,
         help="how often to evaluate the model (after training on this many sentences) (default 2000)"
     )
+    crfgroup.add_argument(
+        "-r",
+        "--rnn_dim",
+        type=int,
+        default=None,
+        help="model should encode context using recurrent neural nets with this hidden-state dimensionality (>= 0)"
+    )
 
+    awesomegroup = parser.add_argument_group("Awesome mode options")
+
+    awesomegroup.add_argument(
+        "--awesome_decoder",
+        type=str,
+        default="hybrid",
+        choices=['viterbi', 'posterior', 'hybrid'],
+        help="decoding method to use"
+    )
+    awesomegroup.add_argument(
+        "--supervised_constraint",
+        action="store_true",
+        default=True,
+        help="use supervised tag constraints"
+    )
+    awesomegroup.add_argument(
+        "--smart_smoothing",
+        action="store_true",
+        default=True,
+        help="use differential smoothing based on tag characteristics"
+    )
+    awesomegroup.add_argument(
+        "--optimize_hyperparams",
+        action="store_true",
+        help="run hyperparameter optimization"
+    )
     args = parser.parse_args()
 
     ### Any arg manipulation and checking goes here

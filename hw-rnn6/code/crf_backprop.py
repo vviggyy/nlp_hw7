@@ -156,8 +156,11 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         #
         # Hint: You want to maximize the (regularized) log-probability. However,
         # PyTorch optimizers *minimize* functions by default.
-        loss = -self.logprob(sentence=Sentence, corpus=TaggedCorpus)
-        loss.backward()
+        logprob = self.log_prob(sentence, corpus)
+        if not hasattr(self, 'minibatch_loss') or self.minibatch_loss is None:
+            self.minibatch_loss = -logprob  # negative because we're minimizing
+        else:
+            self.minibatch_loss = self.minibatch_loss - logprob
         #raise NotImplementedError   # you fill this in!
 
     @override
@@ -167,7 +170,10 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Look up how to do this with a PyTorch optimizer!
         # Basically, you want to take a step in the direction
         # of the accumulated gradient.
-        self.optimizer.step()
+        if self.minibatch_loss is not None:
+            self.minibatch_loss.backward()
+            self.optimizer.step()
+            self.minibatch_loss = None
         
     @override
     def reg_gradient_step(self, lr: float, reg: float, frac: float):
