@@ -300,13 +300,15 @@ class ConditionalRandomField(HiddenMarkovModel):
             
             # Evaluate our progress.
             curr_loss = _loss()
-            if steps >= min_steps and curr_loss >= old_loss * (1-tolerance):
+            if steps >= min_steps and (curr_loss >= old_loss * (1-tolerance) or curr_loss < 0.0001):
+                print("we are here ")
                 break   # we haven't gotten much better since last evalbatch, so stop
             old_loss = curr_loss   # remember for next evalbatch
 
         # For convenience when working in a Python notebook, 
         # we automatically save our training work by default.
         if save_path: self.save(save_path)
+
     def compute_potentials(self, isent: Sentence) -> Tuple[Tensor, Tensor]:
         """Helper to show transition and emission potentials for debugging."""
         word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)

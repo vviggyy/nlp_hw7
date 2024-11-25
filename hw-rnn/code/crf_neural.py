@@ -179,7 +179,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         word_embeddings = self.E[word_ids]
         T = len(word_ids)
         
-        # Forward pass 
+        #forward pass 
         h_forward = torch.zeros(T, self.rnn_dim)
         h_curr = torch.zeros(self.rnn_dim)
         for j in range(T):
@@ -187,7 +187,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
             h_curr = torch.sigmoid(self.M @ input_vec)
             h_forward[j] = h_curr
 
-        # Backward pass
+        #backward pass
         h_backward = torch.zeros(T, self.rnn_dim) 
         h_curr = torch.zeros(self.rnn_dim)
         for j in range(T-1, -1, -1):
@@ -207,7 +207,6 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
     @override
     @typechecked
     def A_at(self, position, sentence) -> Tensor:
-        
         """Computes non-stationary k x k transition potential matrix using biRNN 
         contextual features and tag embeddings (one-hot encodings). Output should 
         be ϕA from the "Parameterization" section in the reading handout."""
@@ -215,35 +214,43 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         if not hasattr(self, 'curr_sent') or self.curr_sent != sentence:
             self.setup_sentence(sentence)
 
-        #get contextual features
         h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim)
         h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim)
         
-        # One-hot tag vectors
-        potentials = torch.zeros(self.k, self.k)
-        for s in range(self.k):
-            s_emb = torch.eye(self.k)[s]
-            for t in range(self.k):
-                t_emb = torch.eye(self.k)[t]
-                
-                # Concatenate features as in equation (47)
-                f_A = torch.sigmoid(self.U_A @ torch.cat([
-                    torch.ones(1),
-                    h_prefix,
-                    s_emb,
-                    t_emb,
-                    h_suffix
-                ]))
-                
-                # Compute potential as in equation (45)
-                potentials[s,t] = torch.exp(self.theta_A[s*self.k + t] * f_A.sum())
+        # combinations of s and t 
+        s_indices = torch.arange(self.k).unsqueeze(1).repeat(1, self.k).reshape(-1)
+        t_indices = torch.arange(self.k).repeat(self.k)
         
-        # Set structural zeros
-        potentials[:, self.bos_t] = 0
-        potentials[self.eos_t, :] = 0
+        # one hot for s and t 
+        s_emb = F.one_hot(s_indices, num_classes=self.k).float()  # Shape: [k*k, k]
+        t_emb = F.one_hot(t_indices, num_classes=self.k).float()  # Shape: [k*k, k]
+        
+        h_prefix_expanded = h_prefix.unsqueeze(0).expand(self.k * self.k, -1)
+        h_suffix_expanded = h_suffix.unsqueeze(0).expand(self.k * self.k, -1)
+
+        bias = torch.ones(self.k * self.k, 1)
+        
+        # equation (47)
+        feature_matrix = torch.cat([
+            bias,
+            h_prefix_expanded,
+            s_emb,
+            t_emb,
+            h_suffix_expanded
+        ], dim=1)  # shape: [k*k, feature_dim]
+        
+        f_A = torch.sigmoid(self.U_A @ feature_matrix.T).sum(dim=0)
+        potentials = torch.exp(self.theta_A * f_A).reshape(self.k, self.k)
+        
+        # mask to set zeros without in-place modification
+        mask = torch.ones_like(potentials)
+        mask[:, self.bos_t] = 0
+        mask[self.eos_t, :] = 0
+        
+        potentials = potentials * mask
 
         return potentials
-        
+
     @override
     @typechecked
     def B_at(self, position, sentence) -> Tensor:
@@ -257,28 +264,35 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         word_id = sentence[position][0]
         word_emb = self.E[word_id]
         
-        # Get contextual features
+        #contextual features
         h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim)
         h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim)
-
-        potentials = torch.zeros(self.k, self.V)
-        for t in range(self.k):
-            t_emb = torch.eye(self.k)[t]
-            
-            # Concatenate features as in equation (48)
-            f_B = torch.sigmoid(self.U_B @ torch.cat([
-                torch.ones(1),
-                h_prefix,
-                t_emb,
-                word_emb,
-                h_suffix
-            ]))
-            
-            # Compute potential as in equation (45)
-            potential = torch.exp(self.theta_B[t] * f_B.sum())
-            potentials[t] = potential.repeat(self.V)
-
-        # Set structural zeros
-        potentials[self.eos_t:, :] = 0
+        
+        # one hot embedding fo all tag 
+        t_emb = torch.eye(self.k)  # Shape: [k, k]
+        
+        h_prefix_expanded = h_prefix.unsqueeze(0).expand(self.k, -1)
+        h_suffix_expanded = h_suffix.unsqueeze(0).expand(self.k, -1)
+        word_emb_expanded = word_emb.unsqueeze(0).expand(self.k, -1)
+        
+        bias = torch.ones(self.k, 1)
+        
+        # equation (48)
+        feature_matrix = torch.cat([
+            bias,
+            h_prefix_expanded,
+            t_emb,
+            word_emb_expanded,
+            h_suffix_expanded
+        ], dim=1)  # shape [k, feature_dim]
+        
+        f_B = torch.sigmoid(self.U_B @ feature_matrix.T).sum(dim=0)
+        potentials = torch.exp(self.theta_B * f_B).unsqueeze(1).expand(-1, self.V)
+        
+        #mask to set zeros without in-place modification
+        mask = torch.ones_like(potentials)
+        mask[self.eos_t:, :] = 0
+    
+        potentials = potentials * mask
         
         return potentials
