@@ -301,7 +301,6 @@ class ConditionalRandomField(HiddenMarkovModel):
             # Evaluate our progress.
             curr_loss = _loss()
             if steps >= min_steps and (curr_loss >= old_loss * (1-tolerance) or curr_loss < 0.0001):
-                print("we are here ")
                 break   # we haven't gotten much better since last evalbatch, so stop
             old_loss = curr_loss   # remember for next evalbatch
 

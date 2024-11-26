@@ -140,16 +140,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # method will train exactly as before (you should probably review it) --
         # except that it will call methods that you will override below. Your
         # overridden versions can use the optimizer that we just created.
-        
-        prev_loss = float('inf')
-        no_improvement_count = 0
-        max_no_improvement = 3 #max iterations without improvement
-        
-        def _has_converged(curr_loss, prev_loss, tolerance):
-            if abs(curr_loss) < 1e-10:  # Essentially zero
-                return True
-            relative_change = abs(curr_loss - prev_loss) / abs(prev_loss)
-            return relative_change < tolerance
 
         self._save_time = time.time()   # this line is here just in case you're using an old version of parent class that doesn't do it
         super().train(corpus, *args, minibatch_size=minibatch_size, lr=lr, reg=reg,tolerance= tolerance, **kwargs)

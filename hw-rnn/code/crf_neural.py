@@ -66,7 +66,6 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         desup_isent = self._integerize_sentence(sentence.desupervise(), corpus)
         denominator = self.forward_pass(desup_isent)  # Marginalizes over all paths
 
-
         return numerator - denominator
 
     @override
