@@ -50,7 +50,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Call both parent classes' initializers
         nn.Module.__init__(self)  
-        print("Initializing ConditionalRandomFieldBack")
         super().__init__(tagset, vocab, unigram)
 
         # Print number of parameters        

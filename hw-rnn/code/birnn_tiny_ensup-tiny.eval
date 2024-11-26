@@ -28,3 +28,4 @@ Wrote tagging to birnn_tiny_ensup-tiny.output
 Cross-entropy: 0.0617 nats (= perplexity 1.064)
 Tagging accuracy: all: 99.832%, known: 99.832%, seen: nan%, novel: nan%
 ===
+Cross-entropy: 50.2059 nats (= perplexity 6369997186786422423552.000)
