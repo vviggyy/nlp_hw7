@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from math import inf, log, exp
 from pathlib import Path
+from typing import List, Optional, Tuple
 from typing_extensions import override
 from typeguard import typechecked
 
@@ -41,19 +42,31 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
                  vocab: Integerizer[Word],
                  lexicon: Tensor,
                  rnn_dim: int,
-                 unigram: bool = False):
+                 unigram: bool = False,
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         # [doctring inherited from parent method]
 
         if unigram:
             raise NotImplementedError("Not required for this homework")
 
+        self.device = device
         self.rnn_dim = rnn_dim
-        self.e = lexicon.size(1) if lexicon is not None else len(vocab) - 2  # one-hot dimension if no lexicon
-        self.E = lexicon if lexicon is not None else torch.eye(len(vocab) - 2)  # use one-hot if no lexicon
-        
+        self.e = lexicon.size(1) if lexicon is not None else len(vocab) - 2
+        self.E = lexicon if lexicon is not None else torch.eye(len(vocab) - 2)
+    
 
         nn.Module.__init__(self)  
         super().__init__(tagset, vocab, unigram)
+
+        # Create tag embeddings after super().__init__ since it sets self.k
+        self.tag_embeddings = torch.eye(self.k)
+        
+        # Move tensors to GPU if available
+        self.E = self.E.to(self.device)
+        self.tag_embeddings = self.tag_embeddings.to(self.device)
+        
+        # Move model to device
+        self.to(self.device)
 
     @override
     @typechecked
@@ -86,7 +99,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         self.M_prime = nn.Parameter(torch.randn(self.rnn_dim, 1 + self.e + self.rnn_dim) * 0.1)
 
         #one hot tag embeddings
-        self.tag_embeddings = torch.eye(self.k)
+        self.tag_embeddings = torch.eye(self.k).to(self.device)
 
         # projection mats for feature functions
         feature_dim = 1 + self.rnn_dim + 2*self.k + self.rnn_dim  # for transition features
@@ -107,7 +120,8 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         # Use AdamW optimizer for better training stability
         self.optimizer = torch.optim.AdamW( 
             params=self.parameters(),       
-            lr=lr, weight_decay=weight_decay
+            lr=lr, 
+            weight_decay=weight_decay
         )                                   
         self.scheduler = None            
        
@@ -119,48 +133,45 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
     @override
     def forward_pass(self, isent: IntegerizedSentence) -> TorchScalar:
         self.setup_sentence(isent)
-        word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)
-        tag_ids = [t for _, t in isent[1:-1]]  # Keep as None if unsupervised
+        word_ids = torch.tensor([w for w, _ in isent[1:-1]], 
+                          dtype=torch.long, 
+                          device='cuda' if self.use_cuda else 'cpu')
+        tag_ids = torch.tensor([t if t is not None else -1 for _, t in isent[1:-1]], 
+                         dtype=torch.long, 
+                         device='cuda' if self.use_cuda else 'cpu')
         T = len(word_ids) + 1
-        
-        alpha = torch.full((T, self.k), float('-inf'))
+
+        alpha = torch.full((T, self.k), float('-inf'), device=self.device)
         alpha[0, self.bos_t] = 0.0
-        
-        # Check if this is a supervised sequence
+
+        eps = 1e-8  # Numerical stability constant
         is_supervised = any(t is not None for t in tag_ids)
-        
+
         for t in range(1, T):
             A = self.A_at(t, isent)
             B = self.B_at(t, isent)
             prev_alpha = alpha[t-1]
-            
-            if is_supervised and tag_ids[t-1] is not None:
-                # For supervised steps, directly accumulate the score
-                if t == 1:
-                    # From BOS to first tag
-                    alpha[t, tag_ids[t-1]] = (alpha[0, self.bos_t] + 
-                                            torch.log(A[self.bos_t, tag_ids[t-1]] + 1e-10) +
-                                            torch.log(B[tag_ids[t-1], word_ids[t-1]] + 1e-10))
-                else:
-                    # From previous gold tag to current gold tag
-                    if tag_ids[t-2] is not None:
-                        alpha[t, tag_ids[t-1]] = (alpha[t-1, tag_ids[t-2]] + 
-                                                torch.log(A[tag_ids[t-2], tag_ids[t-1]] + 1e-10) +
-                                                torch.log(B[tag_ids[t-1], word_ids[t-1]] + 1e-10))
-            else:
-                # For unsupervised steps, consider all possible transitions
-                alpha_t = torch.logsumexp(prev_alpha.unsqueeze(1) + torch.log(A + 1e-10), dim=0)
-                alpha[t] = alpha_t + torch.log(B[:, word_ids[t-1]] + 1e-10)
 
-        # Handle final transition to EOS
+            if is_supervised and tag_ids[t-1] is not None:
+                if t == 1:
+                    alpha[t, tag_ids[t-1]] = (prev_alpha[self.bos_t] + 
+                                            torch.log(A[self.bos_t, tag_ids[t-1]] + eps) +
+                                            torch.log(B[tag_ids[t-1], word_ids[t-1]] + eps))
+                else:
+                    if tag_ids[t-2] is not None:
+                        alpha[t, tag_ids[t-1]] = (prev_alpha[tag_ids[t-2]] + 
+                                                torch.log(A[tag_ids[t-2], tag_ids[t-1]] + eps) +
+                                                torch.log(B[tag_ids[t-1], word_ids[t-1]] + eps))
+            else:
+                alpha_t = torch.logsumexp(prev_alpha.unsqueeze(1) + torch.log(A + eps), dim=0)
+                alpha[t] = alpha_t + torch.log(B[:, word_ids[t-1]] + eps)
+
         final_A = self.A_at(T, isent)
         if is_supervised and tag_ids[-1] is not None:
-            # Direct transition from final gold tag to EOS
-            self.log_Z = alpha[T-1, tag_ids[-1]] + torch.log(final_A[tag_ids[-1], self.eos_t] + 1e-10)
+            self.log_Z = alpha[T-1, tag_ids[-1]] + torch.log(final_A[tag_ids[-1], self.eos_t] + eps)
         else:
-            # Consider all possible transitions to EOS
-            self.log_Z = torch.logsumexp(alpha[T-1] + torch.log(final_A[:, self.eos_t] + 1e-10), dim=0)
-        
+            self.log_Z = torch.logsumexp(alpha[T-1] + torch.log(final_A[:, self.eos_t] + eps), dim=0)
+
         self.alpha = alpha
         return self.log_Z
     
@@ -179,18 +190,28 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         T = len(word_ids)
         
         #forward pass 
-        h_forward = torch.zeros(T, self.rnn_dim)
-        h_curr = torch.zeros(self.rnn_dim)
+        h_forward = torch.zeros(T, self.rnn_dim, device=self.device)
+        h_curr = torch.zeros(self.rnn_dim, device=self.device)
+        
         for j in range(T):
-            input_vec = torch.cat([torch.ones(1), h_curr, word_embeddings[j]])
+            input_vec = torch.cat([
+                torch.ones(1, device=self.device),
+                h_curr,
+                word_embeddings[j]
+            ])
             h_curr = torch.sigmoid(self.M @ input_vec)
             h_forward[j] = h_curr
 
-        #backward pass
-        h_backward = torch.zeros(T, self.rnn_dim) 
-        h_curr = torch.zeros(self.rnn_dim)
+        # Backward pass (vectorized)
+        h_backward = torch.zeros(T, self.rnn_dim, device=self.device)
+        h_curr = torch.zeros(self.rnn_dim, device=self.device)
+        
         for j in range(T-1, -1, -1):
-            input_vec = torch.cat([torch.ones(1), word_embeddings[j], h_curr])
+            input_vec = torch.cat([
+                torch.ones(1, device=self.device),
+                word_embeddings[j],
+                h_curr
+            ])
             h_curr = torch.sigmoid(self.M_prime @ input_vec)
             h_backward[j] = h_curr
 
@@ -213,42 +234,42 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         if not hasattr(self, 'curr_sent') or self.curr_sent != sentence:
             self.setup_sentence(sentence)
 
-        h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim)
-        h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim)
-        
-        # combinations of s and t 
-        s_indices = torch.arange(self.k).unsqueeze(1).repeat(1, self.k).reshape(-1)
-        t_indices = torch.arange(self.k).repeat(self.k)
-        
-        # one hot for s and t 
-        s_emb = F.one_hot(s_indices, num_classes=self.k).float()  # Shape: [k*k, k]
-        t_emb = F.one_hot(t_indices, num_classes=self.k).float()  # Shape: [k*k, k]
-        
+        # Get contextual features
+        h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim, device=self.device)
+        h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim, device=self.device)
+
+        # Create tag combination indices (vectorized)
+        s_indices = torch.arange(self.k, device=self.device).unsqueeze(1).repeat(1, self.k).reshape(-1)
+        t_indices = torch.arange(self.k, device=self.device).repeat(self.k)
+
+        # Create one-hot encodings (vectorized)
+        s_emb = F.one_hot(s_indices, num_classes=self.k).float().to(self.device)
+        t_emb = F.one_hot(t_indices, num_classes=self.k).float().to(self.device)
+
+        # Expand contextual features
         h_prefix_expanded = h_prefix.unsqueeze(0).expand(self.k * self.k, -1)
         h_suffix_expanded = h_suffix.unsqueeze(0).expand(self.k * self.k, -1)
 
-        bias = torch.ones(self.k * self.k, 1)
-        
-        # equation (47)
+        # Compute feature matrix (vectorized)
         feature_matrix = torch.cat([
-            bias,
+            torch.ones(self.k * self.k, 1, device=self.device),
             h_prefix_expanded,
             s_emb,
             t_emb,
             h_suffix_expanded
-        ], dim=1)  # shape: [k*k, feature_dim]
-        
+        ], dim=1)
+
+        # Compute potentials (vectorized)
         f_A = torch.sigmoid(self.U_A @ feature_matrix.T).sum(dim=0)
         potentials = torch.exp(self.theta_A * f_A).reshape(self.k, self.k)
-        
-        # mask to set zeros without in-place modification
-        mask = torch.ones_like(potentials)
+        potentials = torch.clamp(potentials, min=1e-6, max=1e6)
+        # Apply mask for structural zeros
+        mask = torch.ones_like(potentials, device=self.device)
         mask[:, self.bos_t] = 0
         mask[self.eos_t, :] = 0
-        
-        potentials = potentials * mask
 
-        return potentials
+        
+        return potentials * mask
 
     @override
     @typechecked
@@ -264,34 +285,24 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         word_emb = self.E[word_id]
         
         #contextual features
-        h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim)
-        h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim)
-        
-        # one hot embedding fo all tag 
-        t_emb = torch.eye(self.k)  # Shape: [k, k]
-        
-        h_prefix_expanded = h_prefix.unsqueeze(0).expand(self.k, -1)
-        h_suffix_expanded = h_suffix.unsqueeze(0).expand(self.k, -1)
-        word_emb_expanded = word_emb.unsqueeze(0).expand(self.k, -1)
-        
-        bias = torch.ones(self.k, 1)
-        
-        # equation (48)
+        h_prefix = self.h_forward[position-1] if position > 0 else torch.zeros(self.rnn_dim, device=self.device)
+        h_suffix = self.h_backward[position] if position < len(sentence) else torch.zeros(self.rnn_dim, device=self.device)
+
+        # Create feature matrix (vectorized)
         feature_matrix = torch.cat([
-            bias,
-            h_prefix_expanded,
-            t_emb,
-            word_emb_expanded,
-            h_suffix_expanded
-        ], dim=1)  # shape [k, feature_dim]
-        
+            torch.ones(self.k, 1, device=self.device),
+            h_prefix.unsqueeze(0).expand(self.k, -1),
+            self.tag_embeddings,
+            word_emb.unsqueeze(0).expand(self.k, -1),
+            h_suffix.unsqueeze(0).expand(self.k, -1)
+        ], dim=1)
+
+        # Compute potentials (vectorized)
         f_B = torch.sigmoid(self.U_B @ feature_matrix.T).sum(dim=0)
         potentials = torch.exp(self.theta_B * f_B).unsqueeze(1).expand(-1, self.V)
-        
-        #mask to set zeros without in-place modification
-        mask = torch.ones_like(potentials)
+
+        # Apply mask for structural zeros
+        mask = torch.ones_like(potentials, device=self.device)
         mask[self.eos_t:, :] = 0
-    
-        potentials = potentials * mask
-        
-        return potentials
+
+        return potentials * mask

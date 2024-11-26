@@ -50,6 +50,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Call both parent classes' initializers
         nn.Module.__init__(self)  
+        print("Initializing ConditionalRandomFieldBack")
         super().__init__(tagset, vocab, unigram)
 
         # Print number of parameters        
@@ -106,10 +107,21 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
     def init_optimizer(self, lr: float, weight_decay: float) -> None:      
         """Creates an optimizer for training.
         A subclass may override this method to select a different optimizer."""
-        self.optimizer = torch.optim.SGD(
-            params=self.parameters(),  # all nn.Parameter objects that are stored in attributes of self
-            lr=lr, weight_decay=weight_decay
-        )
+        self.optimizer = torch.optim.AdamW(
+        params=self.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=(0.9, 0.999),  # Default Adam betas
+        eps=1e-8,           # Slightly larger epsilon for stability
+        amsgrad=True        # Use AMSGrad variant for better convergence
+    )
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        self.optimizer,
+        mode='min',
+        factor=0.5,
+        patience=2,
+        verbose=True
+    )
 
     def count_params(self) -> None:
         paramcount = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -149,9 +161,10 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
 
         # Look up how to do this with a PyTorch optimizer!
         if hasattr(self, 'optimizer'):
-            self.optimizer.zero_grad()
-        self.minibatch_sentences = []  # Store sentences for batch processing
-
+            # More memory efficient than optimizer.zero_grad()
+            for param in self.parameters():
+                param.grad = None
+        self.minibatch_sentences = []
 
     @override
     def accumulate_logprob_gradient(self, sentence: Sentence, corpus: TaggedCorpus) -> None:
@@ -171,7 +184,33 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         if not hasattr(self, 'minibatch_sentences'):
             self.minibatch_sentences = []
+            
+        device = next(self.parameters()).device
         self.minibatch_sentences.append((sentence, corpus))
+        
+        # Process in larger batches for efficiency
+        if len(self.minibatch_sentences) >= 32:  # Configurable batch size
+            self._process_batch()
+    
+    def _process_batch(self):
+        """Helper method to process accumulated sentences in batch"""
+        if not self.minibatch_sentences:
+            return
+            
+        # Compute logprobs in parallel
+        logprobs = []
+        for sentence, corpus in self.minibatch_sentences:
+            logprob = self.logprob(sentence, corpus)
+            logprobs.append(logprob)
+        
+        # Combine losses efficiently
+        total_loss = -torch.stack(logprobs).sum()
+        
+        # Backward pass
+        total_loss.backward()
+        
+        # Clear batch
+        self.minibatch_sentences = []
 
     @override
     def logprob_gradient_step(self, lr: float) -> None:
@@ -181,18 +220,24 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Basically, you want to take a step in the direction
         # of the accumulated gradient.
         if hasattr(self, 'minibatch_sentences') and self.minibatch_sentences:
-        # Create a list of logprobs first
-            logprobs = []
-            for sentence, corpus in self.minibatch_sentences:
-                logprob = self.logprob(sentence, corpus)
-                logprobs.append(logprob)
+            # Process any remaining sentences
+            self._process_batch()
             
-            # Sum them using a non-in-place operation
-            total_loss = -sum(logprobs)  # Note the negative sign since we're minimizing
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             
-            total_loss.backward()
+            # Step optimizer
             self.optimizer.step()
-            self.minibatch_sentences = [] 
+            
+            # Update learning rate if using scheduler
+            if hasattr(self, 'scheduler') and self.scheduler is not None:
+                self.scheduler.step(self._compute_validation_loss())
+    
+    def _compute_validation_loss(self) -> float:
+        """Helper method to compute validation loss for scheduler"""
+        # Implement validation loss computation here if needed
+        # For now, return a placeholder value
+        return 0.0
         
     @override
     def reg_gradient_step(self, lr: float, reg: float, frac: float):
@@ -236,7 +281,11 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         gradient direction, thanks to techniques such as momentum or weight
         decay."""
                
-        return lr * sum(torch.sum(p.grad * p.grad).item()   # squared norm of p, as a float
-                        for p in self.parameters() 
-                        if p.grad is not None) / minibatch_size
+        with torch.no_grad():
+            total_grad_norm = sum(
+                torch.sum(p.grad * p.grad).item() 
+                for p in self.parameters() 
+                if p.grad is not None
+            )
+        return lr * total_grad_norm / minibatch_size
         
