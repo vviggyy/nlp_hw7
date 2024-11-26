@@ -1,0 +1,14 @@
+Cross-entropy: 0.6314 nats (= perplexity 1.880)
+Cross-entropy: 0.2635 nats (= perplexity 1.302)
+Cross-entropy: 0.2148 nats (= perplexity 1.240)
+Cross-entropy: 0.2093 nats (= perplexity 1.233)
+Cross-entropy: 0.2071 nats (= perplexity 1.230)
+Cross-entropy: 0.2060 nats (= perplexity 1.229)
+Cross-entropy: 0.2054 nats (= perplexity 1.228)
+Cross-entropy: 0.2050 nats (= perplexity 1.228)
+Cross-entropy: 0.2047 nats (= perplexity 1.227)
+Cross-entropy: 0.2046 nats (= perplexity 1.227)
+Wrote tagging to ic_crf_backprop_icsup.output
+Cross-entropy: 0.2046 nats (= perplexity 1.227)
+Tagging accuracy: all: 90.000%, known: 90.000%, seen: nan%, novel: nan%
+===

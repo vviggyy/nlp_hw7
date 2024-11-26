@@ -40,3 +40,10 @@ Cross-entropy: nan nats (= perplexity nan)
 Cross-entropy: nan nats (= perplexity nan)
 Cross-entropy: nan nats (= perplexity nan)
 Cross-entropy: -30.6303 nats (= perplexity 0.000)
+Cross-entropy: 2.9216 nats (= perplexity 18.571)
+Cross-entropy: 2.8978 nats (= perplexity 18.135)
+Cross-entropy: 2.8978 nats (= perplexity 18.135)
+Wrote tagging to birnn_tiny_ensup-tiny.output
+Cross-entropy: 2.8978 nats (= perplexity 18.135)
+Tagging accuracy: all: 87.248%, known: 87.248%, seen: nan%, novel: nan%
+===

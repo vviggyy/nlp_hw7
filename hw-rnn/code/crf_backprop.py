@@ -21,6 +21,7 @@ from integerize import Integerizer
 from crf import ConditionalRandomField
 
 TorchScalar = Float[Tensor, ""] # a Tensor with no dimensions, i.e., a scalar
+torch.autograd.set_detect_anomaly(True)
 
 logger = logging.getLogger(Path(__file__).stem)  # For usage, see findsim.py in earlier assignment.
     # Note: We use the name "logger" this time rather than "log" since we
@@ -93,14 +94,16 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # and you don't need to initialize them to -inf or anything else.)
 
         with torch.no_grad():
-            if not self.unigram:
-                self.WA.data[:, self.bos_t] = -999  # can't transition to BOS
-                self.WA.data[self.eos_t, :] = -999  # can't transition from EOS
-                self.WA.data[self.bos_t, self.eos_t] = -999  # BOS can't transition directly to EOS
+            wa_mask = torch.ones_like(self.WA.data)
+            wa_mask[:, self.bos_t] = 0  # can't transition to BOS
+            wa_mask[self.eos_t, :] = 0  # can't transition from EOS
+            wa_mask[self.bos_t, self.eos_t] = 0  # BOS can't transition directly to EOS
+            self.WA.data = self.WA.data * wa_mask + wa_mask * -999
 
-            # BOS and EOS tags can't emit any words
-            self.WB.data[self.eos_t, :] = -999
-            self.WB.data[self.bos_t, :] = -999
+            wb_mask = torch.ones_like(self.WB.data)
+            wb_mask[self.eos_t, :] = 0
+            wb_mask[self.bos_t, :] = 0
+            self.WB.data = self.WB.data * wb_mask + wb_mask * -999
        
         self.updateAB()
        
@@ -115,13 +118,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         eps=1e-8,           # Slightly larger epsilon for stability
         amsgrad=True        # Use AMSGrad variant for better convergence
     )
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        self.optimizer,
-        mode='min',
-        factor=0.5,
-        patience=2,
-        verbose=True
-    )
+
 
     def count_params(self) -> None:
         paramcount = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -229,9 +226,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
             # Step optimizer
             self.optimizer.step()
             
-            # Update learning rate if using scheduler
-            if hasattr(self, 'scheduler') and self.scheduler is not None:
-                self.scheduler.step(self._compute_validation_loss())
     
     def _compute_validation_loss(self) -> float:
         """Helper method to compute validation loss for scheduler"""
