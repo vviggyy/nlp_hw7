@@ -202,6 +202,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Backward pass
         total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), 5.0)
         
         # Clear batch
         self.minibatch_sentences = []

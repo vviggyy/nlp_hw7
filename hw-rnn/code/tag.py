@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
+        default="cuda",
         choices=['cpu','cuda','mps'],
         help="device to use for PyTorch (cpu or cuda, or mps if you are on a mac)"
     )
@@ -374,7 +374,7 @@ def main() -> None:
             # Now create the model.
             model = new_model_class(train_corpus.tagset, train_corpus.vocab, 
                                     rnn_dim=(args.rnn_dim or 0), lexicon=lexicon,   # neural model args
-                                    unigram=args.unigram)
+                                    unigram=args.unigram, corpus=train_corpus)
     
     # Load the input data (eval corpus), using the same vocab and tagset.
     eval_corpus = TaggedCorpus(Path(args.input), tagset=model.tagset, vocab=model.vocab)
