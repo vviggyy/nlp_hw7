@@ -150,7 +150,7 @@ class ConditionalRandomField(HiddenMarkovModel):
               lr: float = 1.0,
               reg: float = 0.0,
               max_steps: int = 50000,
-              save_path: Optional[Path] = Path("my_hmm.pkl"), checkpoint = None) -> None:
+              save_path: Optional[Path] = Path("my_hmm.pkl")) -> None:
         """Train the CRF on the given training corpus, starting at the current parameters.
 
         The minibatch_size controls how often we do an update.
@@ -221,7 +221,6 @@ class ConditionalRandomField(HiddenMarkovModel):
                     self.logprob_gradient_step(lr)
                     self.reg_gradient_step(lr, reg, minibatch_size / len(corpus))
                     self.updateAB()      # update A and B potential matrices from new params
-                    if save_path: self.save(save_path, checkpoint=steps)  
                     self._zero_grad()    # get ready to accumulate a new gradient for next minibatch
             
             # Evaluate our progress.
