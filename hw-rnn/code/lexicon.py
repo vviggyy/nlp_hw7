@@ -153,8 +153,39 @@ def problex_lexicon(corpus: TaggedCorpus) -> torch.Tensor:
     with value log(p(t|w)).  Finally, there is a feature with
     value log(p(w)).  These probabilities are add-one-smoothing
     estimates."""
+    
+    #both are integerized
+    vocab = corpus.vocab 
+    tagset = corpus.tagset
 
-    raise NotImplementedError   # you fill this in!
+    embeddings = [0] * len(vocab) #embedding matrix size is len(vocab) x [len(tagset) + 1], extra one comes from log(p(w))
+    #print(embeddings)
+    
+    word_counts = corpus.get_word_counts() #counts for word occurences in corpus
+    tag_counts = corpus.get_cond_tag_counts() #each word has a counter with tag counts (see corpus.py)
+    n = corpus.num_tokens() #total number of tokens
+  
+    for i in range(len(vocab)):
+        word = vocab[i]
+        #print(word)
+        if word in word_counts.keys(): #check if word was counted in lexicon
+            p_w = torch.log(torch.tensor((word_counts[word] + 1) / (n + len(word_counts.keys()))).unsqueeze(0)) #p-hat(w), add 1 smoothing
+            word_freq_embedding = torch.zeros(len(tagset)) #will contain all p(t|w) 
+            total = torch.sum(torch.tensor(list(tag_counts[word].values()))) #total tag counts for a given word 
+            for j in range(len(tagset)):
+                word_freq_embedding[j] = tag_counts[word][tagset[j]] #if tag isn't present, returns zero automatically
+            word_freq_embedding = torch.log((word_freq_embedding + 1)/(total + len(tag_counts[word].keys()))) #divide by total to make into probs, add 1 smoothing
+            word_freq_embedding = torch.cat([word_freq_embedding, p_w]) #construct row of features corresponding to word
+            embeddings[i] = word_freq_embedding  
+        else: #OOL
+            word_freq_embedding = torch.log(torch.full((len(tagset)+1,),1e-30)) #avoid log(0)
+            embeddings[i] = word_freq_embedding
+        
+    return(torch.stack(embeddings))
+
+
+
+
 
 def affixes_lexicon(corpus: TaggedCorpus,
                     newvocab: Optional[Integerizer[Word]] = None) -> torch.Tensor:

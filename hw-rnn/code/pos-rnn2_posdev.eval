@@ -25,3 +25,31 @@ Wrote tagging to pos-rnn2_posdev.output
 Cross-entropy: 0.0001 nats (= perplexity 1.000)
 Tagging accuracy: all: 100.000%, known: 100.000%, seen: nan%, novel: nan%
 ===
+Cross-entropy: 0.7032 nats (= perplexity 2.020)
+Cross-entropy: 0.2964 nats (= perplexity 1.345)
+Cross-entropy: 0.2922 nats (= perplexity 1.339)
+Cross-entropy: 0.2900 nats (= perplexity 1.336)
+Cross-entropy: 0.2874 nats (= perplexity 1.333)
+Cross-entropy: 0.2776 nats (= perplexity 1.320)
+Cross-entropy: 0.2343 nats (= perplexity 1.264)
+Cross-entropy: 0.0215 nats (= perplexity 1.022)
+Cross-entropy: 0.0002 nats (= perplexity 1.000)
+Cross-entropy: 0.0001 nats (= perplexity 1.000)
+Wrote tagging to pos-rnn2_posdev.output
+Cross-entropy: 0.0001 nats (= perplexity 1.000)
+Tagging accuracy: all: 100.000%, known: 100.000%, seen: nan%, novel: nan%
+===
+Cross-entropy: 0.7032 nats (= perplexity 2.020)
+Cross-entropy: 0.2964 nats (= perplexity 1.345)
+Cross-entropy: 2.8230 nats (= perplexity 16.828)
+Cross-entropy: 0.2936 nats (= perplexity 1.341)
+Cross-entropy: 0.2928 nats (= perplexity 1.340)
+Cross-entropy: 0.2912 nats (= perplexity 1.338)
+Cross-entropy: 0.2909 nats (= perplexity 1.338)
+Wrote tagging to pos-rnn2_posdev.output
+Cross-entropy: 0.2909 nats (= perplexity 1.338)
+Tagging accuracy: all: 80.357%, known: 80.357%, seen: nan%, novel: nan%
+===
+Cross-entropy: 2.8231 nats (= perplexity 16.829)
+Cross-entropy: 0.2936 nats (= perplexity 1.341)
+Cross-entropy: 2.8140 nats (= perplexity 16.676)

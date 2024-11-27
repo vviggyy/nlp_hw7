@@ -16,7 +16,7 @@
 import logging
 from pathlib import Path
 ##### TYPE DEFINITIONS (USED FOR TYPE ANNOTATIONS)
-from typing import Counter, Iterable, Iterator, List, NewType, Optional, Tuple
+from typing import Counter, Iterable, Iterator, List, NewType, Optional, Tuple, Dict
 from more_itertools import peekable
 from integerize import Integerizer
 
@@ -104,16 +104,19 @@ class TaggedCorpus:
             self.tagset: Integerizer[Tag] = Integerizer()
             self.vocab: Integerizer[Word] = Integerizer()
         
-            word_counts: Counter[Word] = Counter()
+            self.word_counts: Counter[Word] = Counter()
+            self.tags_given_words: Counter[Word] = Counter()
+            
             for word, tag in self.get_tokens(oovs=False):
                 if word == EOS_WORD:      # note: word will never be BOS_WORD
                     continue              # skip EOS for purposes of getting vocab
-                word_counts[word] += 1    # count words to see later if we pass the threshold
+                self.word_counts[word] += 1    # count words to see later if we pass the threshold
                 if tag is not None:
                     self.tagset.add(tag)  # no threshold for tags
-            log.info(f"Read {sum(word_counts.values())} tokens from {', '.join(file.name for file in files)}")
+                    self.count_tags(word, tag, self.tags_given_words)
+            log.info(f"Read {sum(self.word_counts.values())} tokens from {', '.join(file.name for file in files)}")
 
-            for word, count in word_counts.items():
+            for word, count in self.word_counts.items():
                 if count >= vocab_threshold:
                     self.vocab.add(word)
                 else:
@@ -144,7 +147,7 @@ class TaggedCorpus:
         # check that installed tagset and vocab (if any) will suffice
         if tagset is not None or vocab is not None:
             for word, tag in self.get_tokens(oovs=False):
-                self.integerize_word(word)  # make sure it doesn't throw exception with given vocab
+                self.integerize_word(word)  # make sure it doesn't throw exception with given vocab #checking for keyerrors
                 if tag is not None:
                     self.integerize_tag(tag)  # make sure it doesn't throw exception with given tagset
 
@@ -239,7 +242,16 @@ class TaggedCorpus:
                 for sentence in random.sample(pool, len(pool)):
                     yield sentence
 
-
+    def count_tags(self, word, tag, tag_counter): #adds counts tags given a word 
+        if word not in tag_counter:
+            tag_counter[word] = Counter()
+        tag_counter[word][tag] += 1  
+        return
+        
+    def get_word_counts(self): return self.word_counts
+    def get_cond_tag_counts(self): return self.tags_given_words # conditional tags
+    
+    
     # Utility methods for integerizing the objects that are returned above.
 
     def integerize_tag(self, tag: Tag) -> int:
