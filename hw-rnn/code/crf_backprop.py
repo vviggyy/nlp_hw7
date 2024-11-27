@@ -21,7 +21,6 @@ from integerize import Integerizer
 from crf import ConditionalRandomField
 
 TorchScalar = Float[Tensor, ""] # a Tensor with no dimensions, i.e., a scalar
-torch.autograd.set_detect_anomaly(True)
 
 logger = logging.getLogger(Path(__file__).stem)  # For usage, see findsim.py in earlier assignment.
     # Note: We use the name "logger" this time rather than "log" since we
@@ -51,7 +50,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Call both parent classes' initializers
         nn.Module.__init__(self)  
-        print("Initializing ConditionalRandomFieldBack")
         super().__init__(tagset, vocab, unigram)
 
         # Print number of parameters        
@@ -94,16 +92,14 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # and you don't need to initialize them to -inf or anything else.)
 
         with torch.no_grad():
-            wa_mask = torch.ones_like(self.WA.data)
-            wa_mask[:, self.bos_t] = 0  # can't transition to BOS
-            wa_mask[self.eos_t, :] = 0  # can't transition from EOS
-            wa_mask[self.bos_t, self.eos_t] = 0  # BOS can't transition directly to EOS
-            self.WA.data = self.WA.data * wa_mask + wa_mask * -999
+            if not self.unigram:
+                self.WA.data[:, self.bos_t] = -999  # can't transition to BOS
+                self.WA.data[self.eos_t, :] = -999  # can't transition from EOS
+                self.WA.data[self.bos_t, self.eos_t] = -999  # BOS can't transition directly to EOS
 
-            wb_mask = torch.ones_like(self.WB.data)
-            wb_mask[self.eos_t, :] = 0
-            wb_mask[self.bos_t, :] = 0
-            self.WB.data = self.WB.data * wb_mask + wb_mask * -999
+            # BOS and EOS tags can't emit any words
+            self.WB.data[self.eos_t, :] = -999
+            self.WB.data[self.bos_t, :] = -999
        
         self.updateAB()
        
@@ -132,7 +128,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
               minibatch_size: int = 1,
               lr: float = 1.0,  # same defaults as in parent
               reg: float = 0.0,
-              tolerance: float = 1e-5,
+              tolerance: float = 1e-3,
               **kwargs) -> None:
         # [docstring will be inherited from parent method]
                 
@@ -206,6 +202,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Backward pass
         total_loss.backward()
         
+        
         # Clear batch
         self.minibatch_sentences = []
 
@@ -227,12 +224,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
             self.optimizer.step()
             
     
-    def _compute_validation_loss(self) -> float:
-        """Helper method to compute validation loss for scheduler"""
-        # Implement validation loss computation here if needed
-        # For now, return a placeholder value
-        return 0.0
-        
     @override
     def reg_gradient_step(self, lr: float, reg: float, frac: float):
         # [docstring will be inherited from parent method]

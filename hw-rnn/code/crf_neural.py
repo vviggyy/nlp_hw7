@@ -219,7 +219,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
 
         # Create full emission matrix with scores only at observed word
         B = torch.zeros(self.k, self.V)
-        B[:, word_j] = tag_scores.clone()
+        B[:, word_j] = tag_scores
         
         # Apply structural zeros
         B[self.bos_t, :] = 0
@@ -266,9 +266,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
             alpha[t] = torch.logsumexp(trans_scores, dim=0) + torch.log(B[:, w] + 1e-12)
             
             # Zero out impossible tags
-            mask = torch.ones_like(alpha[t])
-            mask[self.bos_t] = 0
-            alpha[t] = alpha[t] * mask + mask[self.bos_t] * float('-inf')
+            alpha[t, self.bos_t] = float('-inf')  # Can't use BOS tag
         
         # Final transition to EOS
         final_A = self.A_at(T, isent)
