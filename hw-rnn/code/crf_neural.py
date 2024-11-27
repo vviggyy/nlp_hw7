@@ -76,10 +76,10 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         self.E = nn.Parameter(self.lexicon.to(self.device), requires_grad=False)
         del self.lexicon
         
-        # One-hot tag embeddings
+        # one-hot tag embeddings
         self.tag_embeddings = nn.Parameter(torch.eye(self.k, device=self.device), requires_grad=False)
         
-        # RNN parameters
+        # rNN parameters
         rnn_input_dim = self.e + self.rnn_dim
         self.M = nn.Parameter(torch.empty(self.rnn_dim, rnn_input_dim, device=self.device))
         self.Mprime = nn.Parameter(torch.empty(self.rnn_dim, rnn_input_dim, device=self.device))
@@ -89,7 +89,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         nn.init.xavier_uniform_(self.M)
         nn.init.xavier_uniform_(self.Mprime)
         
-        # Transition and emission parameters
+        # transition and emission parameters
         trans_dim = 2*self.rnn_dim + 2*self.k
         emit_dim = 2*self.rnn_dim + self.k + self.e + self.k + 1  # Added k+1 for frequencies
 
@@ -132,10 +132,10 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
             amsgrad=True
         )
         
-        # Enable AMP for mixed precision training
+        # i dont htink this works well on kaggle.. might comment out 
         self.scaler = torch.cuda.amp.GradScaler()
         
-        # Add gradient clipping
+        #  gradient clipping
         self.grad_clip_value = 1.0        
        
     @override
@@ -179,28 +179,28 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
     
     @override
     def setup_sentence(self, isent: IntegerizedSentence) -> None:
-        # Batch process entire sequence
         word_ids = torch.tensor([w for w, _ in isent], dtype=torch.long, device=self.device)
         self.sent_len = len(word_ids)
         self.word_ids = word_ids
         word_embeds = self.E[word_ids]  # [seq_len, embed_dim]
 
-        # Preallocate tensors
+        # preallo tensors
         self.h_fwd = torch.zeros(self.sent_len, self.rnn_dim, device=self.device)
         self.h_back = torch.zeros(self.sent_len, self.rnn_dim, device=self.device)
         
-        # Forward pass - use torch.vmap for vectorization
+        #  vectorization
         h = torch.zeros(self.rnn_dim, device=self.device)
         for t in range(self.sent_len):
             h = self.rnn_step(word_embeds[t], h, self.M, self.b)
             self.h_fwd[t] = h
 
-        # Backward pass
+        # back pass
         h = torch.zeros(self.rnn_dim, device=self.device)
         for t in range(self.sent_len-1, -1, -1):
             h = self.rnn_step(word_embeds[t], h, self.Mprime, self.bprime)
             self.h_back[t] = h
     
+    #i think i really dont need this - might get rid of entirely 
     def compute_frequency_features(self, corpus: TaggedCorpus) -> None:
         word_counts = defaultdict(int)
         tag_given_word = defaultdict(lambda: defaultdict(int))
@@ -228,6 +228,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
                         
         self.word_freqs = torch.log1p(self.word_freqs)
         self.tag_freqs = torch.log1p(self.tag_freqs)
+    
     @override
     def accumulate_logprob_gradient(self, sentence: Sentence, corpus: TaggedCorpus) -> None:
         isent = self._integerize_sentence(sentence, corpus)
@@ -250,7 +251,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         h_j = self.h_fwd[position-1]
         h_prime_j = self.h_back[position-1]
 
-        # Batch features for all k*k tag pairs
+        # batchfeatures for all k*k tag pairs
         features = torch.cat([
             h_j.repeat(self.k * self.k, 1),
             h_prime_j.repeat(self.k * self.k, 1),
@@ -260,8 +261,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         
         scores = (features @ self.UA).squeeze(-1)
         A = torch.softmax(scores.view(self.k, self.k), dim=1).clone()
-
-        # Apply mask
+        
         mask = torch.ones_like(A)
         mask[:, self.bos_t] = 0
         mask[self.eos_t, :] = 0

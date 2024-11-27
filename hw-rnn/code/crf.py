@@ -135,14 +135,13 @@ class ConditionalRandomField(HiddenMarkovModel):
         alpha = torch.full((T, self.k), float('-inf'))
         alpha[0, self.bos_t] = 0.0
 
-        # Add numerical stability constant
+        #small non zero 
         EPS = 1e-10
         
-        # Compute logs once with stability
+        # compute once but stable
         log_A = torch.log(self.A + EPS)
         log_B = torch.log(self.B + EPS)
 
-        # Keep track of scale factors
         scale_factors = torch.zeros(T)
 
         for t in range(1, T):
@@ -150,30 +149,28 @@ class ConditionalRandomField(HiddenMarkovModel):
             B_t = log_B[:, word_ids[t-1]].clone()
 
             if tag_ids[t-1] is not None:
-                # Create numerically stable masks
+                # stable masking 
                 trans_mask = torch.zeros_like(A_t)
                 trans_mask[:, tag_ids[t-1]] = 1.0
                 emit_mask = torch.zeros_like(B_t)
                 emit_mask[tag_ids[t-1]] = 1.0
 
-                # Use very negative number instead of -inf
                 A_t = torch.where(trans_mask.bool(), A_t, torch.tensor(-1e4))
                 B_t = torch.where(emit_mask.bool(), B_t, torch.tensor(-1e4))
 
-            # Compute next alpha with scaling
+            # alpha but scaled 
             next_alpha = torch.logsumexp(alpha[t-1].unsqueeze(1) + A_t, dim=0)
             next_alpha = next_alpha + B_t
             
-            # Scale to prevent underflow/overflow
+            #scaling againf or under/overflow
             max_alpha = next_alpha.max().item()
             next_alpha = next_alpha - max_alpha
             scale_factors[t] = max_alpha
             
-            # Zero out BOS (use very negative instead of -inf)
             next_alpha[self.bos_t] = -1e4
             alpha[t] = next_alpha
 
-        # Final transition 
+        #same as last hw
         if tag_ids[-1] is not None:
             trans_mask = torch.zeros_like(log_A[:, self.eos_t])
             trans_mask[tag_ids[-1]] = 1.0
@@ -182,10 +179,9 @@ class ConditionalRandomField(HiddenMarkovModel):
         else:
             final_trans = log_A[:, self.eos_t]
 
-        # Final logsum with scaling
+        # scaling again
         final_sum = torch.logsumexp(alpha[T-1] + final_trans, dim=0)
         
-        # Add back scale factors
         self.log_Z = final_sum + scale_factors.sum()
         self.alpha = alpha
 
@@ -295,7 +291,7 @@ class ConditionalRandomField(HiddenMarkovModel):
                     self.logprob_gradient_step(lr)
                     self.reg_gradient_step(lr, reg, minibatch_size / len(corpus))
                     self.updateAB()      # update A and B potential matrices from new params
-                    if save_path: self.save(save_path, checkpoint=steps)  
+                    if save_path: self.save(save_path, checkpoint=steps) #this is th one new thing 
                     self._zero_grad()    # get ready to accumulate a new gradient for next minibatch
             
             # Evaluate our progress.

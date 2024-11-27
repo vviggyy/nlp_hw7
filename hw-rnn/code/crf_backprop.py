@@ -48,11 +48,9 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
                  unigram: bool = False):
         # [docstring will be inherited from parent method]
         
-        # Call both parent classes' initializers
         nn.Module.__init__(self)  
         super().__init__(tagset, vocab, unigram)
 
-        # Print number of parameters        
         self.count_params()
         
     @override
@@ -93,11 +91,11 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
 
         with torch.no_grad():
             if not self.unigram:
-                self.WA.data[:, self.bos_t] = -999  # can't transition to BOS
-                self.WA.data[self.eos_t, :] = -999  # can't transition from EOS
-                self.WA.data[self.bos_t, self.eos_t] = -999  # BOS can't transition directly to EOS
+                self.WA.data[:, self.bos_t] = -999  
+                self.WA.data[self.eos_t, :] = -999 
+                self.WA.data[self.bos_t, self.eos_t] = -999  
 
-            # BOS and EOS tags can't emit any words
+            #can't emit any words
             self.WB.data[self.eos_t, :] = -999
             self.WB.data[self.bos_t, :] = -999
        
@@ -110,9 +108,9 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         params=self.parameters(),
         lr=lr,
         weight_decay=weight_decay,
-        betas=(0.9, 0.999),  # Default Adam betas
-        eps=1e-8,           # Slightly larger epsilon for stability
-        amsgrad=True        # Use AMSGrad variant for better convergence
+        betas=(0.9, 0.999),  # default Adam betas
+        eps=1e-8,          
+        amsgrad=True        #better convergence
     )
 
 
@@ -154,7 +152,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
 
         # Look up how to do this with a PyTorch optimizer!
         if hasattr(self, 'optimizer'):
-            # More memory efficient than optimizer.zero_grad()
+            # more memory efficient than optimizer.zero_grad()
             for param in self.parameters():
                 param.grad = None
         self.minibatch_sentences = []
@@ -181,7 +179,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         #device = next(self.parameters()).device
         self.minibatch_sentences.append((sentence, corpus))
         
-        # Process in larger batches for efficiency
+        #i need to check if this is actually a tag 
         if len(self.minibatch_sentences) >= 32:  # Configurable batch size
             self._process_batch()
     
@@ -190,21 +188,19 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         if not self.minibatch_sentences:
             return
                 
-        # Compute logprobs in parallel
         logprobs = []
         for sentence, corpus in self.minibatch_sentences:
-            # Remove integerization here
-            logprob = self.logprob(sentence, corpus)  # Pass the original Sentence
+            
+            logprob = self.logprob(sentence, corpus)  
             logprobs.append(logprob)
         
-        # Combine losses efficiently
+        # combine losses
         total_loss = -torch.stack(logprobs).sum()
         
-        # Backward pass
+        # back pass
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters(), 5.0)
-        
-        # Clear batch
+
         self.minibatch_sentences = []
 
     @override
@@ -215,13 +211,12 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         # Basically, you want to take a step in the direction
         # of the accumulated gradient.
         if hasattr(self, 'minibatch_sentences') and self.minibatch_sentences:
-            # Process any remaining sentences
             self._process_batch()
             
-            # Gradient clipping for stability
+            # clipping for stability
             torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             
-            # Step optimizer
+            # step optimizer
             self.optimizer.step()
             
     
