@@ -63,7 +63,7 @@ class HiddenMarkovModel:
 
         # We omit EOS_WORD and BOS_WORD from the vocabulary, as they can never be emitted.
         # See the reading handout section "Don't guess when you know."
-
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if vocab[-2:] != [EOS_WORD, BOS_WORD]:
             raise ValueError("final two types of vocab should be EOS_WORD, BOS_WORD")
 

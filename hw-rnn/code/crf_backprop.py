@@ -178,7 +178,7 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         if not hasattr(self, 'minibatch_sentences'):
             self.minibatch_sentences = []
             
-        device = next(self.parameters()).device
+        #device = next(self.parameters()).device
         self.minibatch_sentences.append((sentence, corpus))
         
         # Process in larger batches for efficiency
@@ -189,11 +189,12 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         """Helper method to process accumulated sentences in batch"""
         if not self.minibatch_sentences:
             return
-            
+                
         # Compute logprobs in parallel
         logprobs = []
         for sentence, corpus in self.minibatch_sentences:
-            logprob = self.logprob(sentence, corpus)
+            # Remove integerization here
+            logprob = self.logprob(sentence, corpus)  # Pass the original Sentence
             logprobs.append(logprob)
         
         # Combine losses efficiently
@@ -201,7 +202,6 @@ class ConditionalRandomFieldBackprop(ConditionalRandomField, nn.Module):
         
         # Backward pass
         total_loss.backward()
-        
         
         # Clear batch
         self.minibatch_sentences = []

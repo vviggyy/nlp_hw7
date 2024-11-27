@@ -300,6 +300,7 @@ class ConditionalRandomField(HiddenMarkovModel):
             
             # Evaluate our progress.
             curr_loss = _loss()
+            print(f"Current Loss: {curr_loss}")
             #print(curr_loss, old_loss)
             if curr_loss == old_loss:
                 break 
@@ -310,23 +311,7 @@ class ConditionalRandomField(HiddenMarkovModel):
         # For convenience when working in a Python notebook, 
         # we automatically save our training work by default.
         if save_path: self.save(save_path)
-
-    def compute_potentials(self, isent: Sentence) -> Tuple[Tensor, Tensor]:
-        """Helper to show transition and emission potentials for debugging."""
-        word_ids = torch.tensor([w for w, _ in isent[1:-1]], dtype=torch.long)
-        tag_ids = torch.tensor([t if t is not None else -1 for _, t in isent[1:-1]], dtype=torch.long)
-        
-        T = len(word_ids)
-        trans_potentials = []
-        emit_potentials = []
-        
-        for t in range(T):
-            A = self.A_at(t, isent)
-            B = self.B_at(t, isent)
-            trans_potentials.append(A)
-            emit_potentials.append(B[:, word_ids[t]])
-        
-        return torch.stack(trans_potentials), torch.stack(emit_potentials)
+    
     @override
     @typechecked
     def logprob(self, sentence: Sentence, corpus: TaggedCorpus) -> TorchScalar:
