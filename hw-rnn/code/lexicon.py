@@ -184,9 +184,6 @@ def problex_lexicon(corpus: TaggedCorpus) -> torch.Tensor:
     return(torch.stack(embeddings))
 
 
-
-
-
 def affixes_lexicon(corpus: TaggedCorpus,
                     newvocab: Optional[Integerizer[Word]] = None) -> torch.Tensor:
     """Return a feature matrix with as many rows as corpus.vocab, where each
@@ -197,6 +194,51 @@ def affixes_lexicon(corpus: TaggedCorpus,
     # If you implement this, you should add the words in newvocab
     # to corpus.vocab so that you can provide affix features for them.
 
-    raise NotImplementedError   # you fill this in!
+    #raise NotImplementedError   # you fill this in!
 
-# Other feature templates could be added, such as word shape.
+    # Other feature templates could be added, such as word shape.
+    
+    
+    #---
+    
+    #affixes chosen based on their ability to change the POS of word
+    # -ness: can change POS from adj to noun (e.g. happy to happi-ness)
+    # -less: can change POS from noun to adj (e.g. self to self-less)
+    # -ed: "" (e.g. train to train-ed)
+    # -pre: "" (e.g. cook to pre-cook)
+    #
+    
+    #set up Affix Integerizer
+    
+    affixes = Integerizer(['ness', 'less', 'ed', 'pre', 'un'])
+    
+    vocab = corpus.vocab
+    if newvocab is not None:
+        vocab.update(newvocab[:])
+    
+    word_counts = corpus.get_word_counts() #counts for word occurences in corpus
+
+    embeddings = torch.zeros(len(vocab)) #embedding matrix is len(vocab) x len(affixes)
+
+    for i in range(len(vocab)):
+        word = vocab[i]
+        #print(word)
+        word_embedding = torch.zeros(len(affixes)) #one feature for each affix
+        if word in word_counts.keys(): #check if word was counted in lexicon
+            #hardcode for now
+            if word[-4:] == "ness":
+                word_embedding[affixes.index["ness"]] = 1
+            elif word[-4:] == "less":
+                word_embedding[affixes.index["less"]] = 1
+            elif word[-2:] == "ed":
+                word_embedding[affixes.index["ed"]] = 1
+            elif word[:3] == "pre":
+                word_embedding[affixes.index["pre"]] = 1
+            elif word[:2] == "un":
+                word_embedding[affixes.index["un"]] = 1
+        else: #OOL
+            word_freq_embedding = torch.zeros(len(affixes))
+        
+        embeddings[i] = word_freq_embedding
+        
+    return(torch.stack(embeddings))
