@@ -52,7 +52,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         nn.Module.__init__(self)  
         
         self.lexicon = lexicon  # Store temporarily
-        self.e = lexicon.size(1)
+        self.e = lexicon.size(1) 
         self.rnn_dim = rnn_dim
 
         super().__init__(tagset, vocab, unigram)
@@ -68,7 +68,6 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
             and theta_b. Use xavier uniform initialization for the matrices and 
             normal initialization for the vectors. 
         """
-
         self.E = nn.Parameter(self.lexicon.to(self.device), requires_grad=False)
         del self.lexicon
         
@@ -152,7 +151,7 @@ class ConditionalRandomFieldNeural(ConditionalRandomFieldBackprop):
         for j in range(1, n):
             A = A_matrices[j-1]
             B = B_matrices[j-1]
-            word_id = sentence[j][0]
+            word_id = min(sentence[j][0], self.V-1)
             tag_id = sentence[j][1]  # May be None
             
             if word_id >= self.V:
